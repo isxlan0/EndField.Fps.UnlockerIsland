@@ -377,7 +377,6 @@ static void RenderLanguagePromptModal(float scale)
     
     if (ImGui::BeginPopupModal("##language_prompt", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
     {
-        // 根据当前选择的语言索引获取对应的Language枚举值
         Language current_lang = kLanguageOptions[ClampLanguageIndex(g_language_prompt_choice)].id;
         
         ImGui::TextUnformatted(TByLanguage(TextKey::LanguagePromptTitle, current_lang));
@@ -1219,8 +1218,7 @@ static void RenderWinUI(float scale)
         ImVec2(g_min_window_w * scale, g_min_window_h * scale),
         ImVec2(FLT_MAX, FLT_MAX));
     ImGui::SetNextWindowSize(window_size, ImGuiCond_FirstUseEver);
-    
-    // 鑾峰彇鏄剧ず鍣ㄥ垎杈ㄧ巼淇℃伅骞惰绠楀眳涓綅缃紝涓€寮€濮嬪啓鍌婚€间簡 蹇樹簡鍔犲垽鏂?
+
     if (!window_positioned)
     {
         HMONITOR monitor = MonitorFromPoint(POINT{ 0, 0 }, MONITOR_DEFAULTTOPRIMARY);
