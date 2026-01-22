@@ -51,9 +51,15 @@ static bool g_dark_mode = true;
 static bool g_need_theme_refresh = true;
 static ULONGLONG g_last_theme_check = 0;
 static int g_theme_mode = 0; 
+static int g_language = 0;
 static float g_min_window_w = 820.0f;
 static float g_min_window_h = 560.0f;
 static std::vector<HWND> g_styled_hwnds;
+static std::string g_theme_items;
+static std::string g_language_items;
+static bool g_show_language_prompt = false;
+static int g_language_prompt_choice = 0;
+static bool g_show_disclaimer_prompt = false;
 
 struct TitleBarState
 {
@@ -77,6 +83,8 @@ struct LauncherConfig
     bool use_custom_args = false;
     std::string custom_args;
     int theme_mode = 0;
+    int language = 0;
+    bool language_set = false;
     bool disclaimer_accepted = false;
 };
 
@@ -97,6 +105,371 @@ static HANDLE g_shared_map = nullptr;
 static SharedData* g_shared = nullptr;
 static SharedData g_shared_last = {};
 static bool g_is_admin = false;
+
+static std::wstring Utf8ToWide(const std::string& text);
+static void SaveConfig(const LauncherConfig& config);
+
+enum class Language
+{
+    ZhCN = 0,
+    EnUS = 1
+};
+
+enum class TextKey
+{
+    SelectEndfieldTitle,
+    SelectEndfieldTip,
+    HintTitle,
+    ErrorNeedAdmin,
+    ErrorGameNotFound,
+    ErrorInvalidProcessHandle,
+    ErrorDllNotFound,
+    ErrorVirtualAllocFailed,
+    ErrorWriteProcessMemoryFailed,
+    ErrorLoadLibraryMissing,
+    ErrorCreateRemoteThreadFailed,
+    ErrorLoadLibraryFailed,
+    ErrorCreateProcessFailed,
+    LaunchStatusReady,
+    LaunchStatusStarted,
+    NavLaunch,
+    NavWindow,
+    NavAbout,
+    PageTitleLaunch,
+    PageTitleWindow,
+    PageTitleAbout,
+    PageSubtitleLaunch,
+    PageSubtitleWindow,
+    PageSubtitleAbout,
+    GamePath,
+    NotSet,
+    AdminRequiredForFeatures,
+    GameNotFoundHint,
+    SelectGameLocation,
+    AutoDetectGamePath,
+    AutoDetectSuccess,
+    AutoDetectFail,
+    SectionInject,
+    InjectWarning,
+    InjectDisabledNoAdmin,
+    EnableInjection,
+    UnlockFps,
+    TargetFps,
+    QuickFps,
+    QuickFpsUnlimited,
+    LaunchArgs,
+    UseLaunchArgs,
+    UsePopupWindow,
+    CustomLaunchArgs,
+    ArgsLabel,
+    LaunchGame,
+    StatusLabel,
+    SectionAppearance,
+    ThemeMode,
+    ThemeFollowSystem,
+    ThemeDark,
+    ThemeLight,
+    ThemeHint,
+    LanguageLabel,
+    LanguageZhCN,
+    LanguageEnUS,
+    LanguagePromptTitle,
+    LanguagePromptBody,
+    LanguagePromptHint,
+    LanguagePromptConfirm,
+    CommonOk,
+    CommonCancel,
+    SectionAbout,
+    ProjectSource,
+    DisclaimerLine1,
+    DisclaimerLine2,
+    DisclaimerLine3,
+    BuildTime,
+    DisclaimerDialogTitle,
+    DisclaimerDialogBody
+};
+
+struct LanguageOption
+{
+    Language id;
+    TextKey name_key;
+};
+
+static const LanguageOption kLanguageOptions[] =
+{
+    { Language::ZhCN, TextKey::LanguageZhCN },
+    { Language::EnUS, TextKey::LanguageEnUS }
+};
+
+static int ClampLanguageIndex(int value)
+{
+    const int count = (int)(sizeof(kLanguageOptions) / sizeof(kLanguageOptions[0]));
+    if (value < 0 || value >= count)
+        return 0;
+    return value;
+}
+
+struct TextEntry
+{
+    const char* zh;
+    const char* en;
+};
+
+static const TextEntry kTextTable[] =
+{
+    { "请选择 Endfield.exe", "Select Endfield.exe" },
+    { "请选择 Endfield.exe。", "Please select Endfield.exe." },
+    { "提示", "Notice" },
+    { "请以管理员权限运行启动器。", "Please run the launcher as administrator." },
+    { "未找到游戏可执行文件。请选择游戏路径。", "Game executable not found. Please select the game path." },
+    { "无效的进程句柄。", "Invalid process handle." },
+    { "未找到 UnlockerIsland.dll。", "UnlockerIsland.dll not found." },
+    { "VirtualAllocEx 失败。", "VirtualAllocEx failed." },
+    { "WriteProcessMemory 失败。", "WriteProcessMemory failed." },
+    { "LoadLibraryW 不可用。", "LoadLibraryW not available." },
+    { "CreateRemoteThread 失败。", "CreateRemoteThread failed." },
+    { "目标进程 LoadLibraryW 失败。", "LoadLibraryW failed in target process." },
+    { "CreateProcess 失败。", "CreateProcess failed." },
+    { "就绪", "Ready" },
+    { "已启动", "Started" },
+    { "启动游戏", "Launch" },
+    { "窗口设置", "Settings" },
+    { "关于", "About" },
+    { "启动游戏", "Launch" },
+    { "窗口设置", "Settings" },
+    { "关于", "About" },
+    { "启动与注入", "Launch & Injection" },
+    { "外观与偏好", "Appearance & Preferences" },
+    { "说明", "Info" },
+    { "游戏路径", "Game Path" },
+    { "未设置", "Not set" },
+    { "游戏文件管理/切换游戏服务器/注入功能需要管理员权限，目前无法获取权限，相关功能已禁用。", "Managing game files, switching servers, and injection require administrator rights. These features are disabled." },
+    { "未找到游戏，请选择路径。", "Game not found. Please select a path." },
+    { "选择游戏位置", "Choose Game Location" },
+    { "自动获取游戏路径", "Auto Detect Game Path" },
+    { "获取成功，已自动关闭游戏，请使用本启动器的启动游戏功能。", "Path detected. The game was closed; please launch it from this launcher." },
+    { "未检测到正在运行的游戏进程，请先启动游戏后再点击获取。", "No running game process detected. Start the game first, then try again." },
+    { "注入", "Injection" },
+    { "注入功能非常危险且有可能会造成严重后果，请谨慎使用。", "Injection is dangerous and may cause serious issues. Use with caution." },
+    { "未以管理员权限运行，注入功能已禁用。", "Not running as administrator. Injection is disabled." },
+    { "启用注入功能 (将模块注入游戏，以便实现一些高级但危险的功能)", "Enable injection (inject modules to enable advanced but risky features)" },
+    { "开启解帧", "Unlock FPS" },
+    { "目标帧数", "Target FPS" },
+    { "快捷帧数", "Quick FPS" },
+    { "21亿(不限制)", "2.1B (Unlimited)" },
+    { "启动参数", "Launch Arguments" },
+    { "使用启动参数", "Use launch arguments" },
+    { "使用 -popupwindow", "Use -popupwindow" },
+    { "自定义启动参数", "Custom launch arguments" },
+    { "参数", "Arguments" },
+    { "启动游戏", "Launch Game" },
+    { "状态: %s", "Status: %s" },
+    { "外观", "Appearance" },
+    { "主题模式", "Theme Mode" },
+    { "跟随系统", "Follow System" },
+    { "深色", "Dark" },
+    { "浅色", "Light" },
+    { "跟随Windows系统设置修改界面颜色。", "Follow Windows settings for the UI theme." },
+    { "语言", "Language" },
+    { "简体中文", "Simplified Chinese" },
+    { "English", "English" },
+    { "选择语言", "Select Language" },
+    { "请选择要使用的语言。", "Please select the language to use." },
+    { "稍后可以在“窗口设置”中切换语言。", "You can change it later in Settings." },
+    { "确定", "OK" },
+    { "确定", "OK" },
+    { "取消", "Cancel" },
+    { "关于", "About" },
+    { "本项目开源地址：", "Project source:" },
+    { "免责声明：本工具仅供学习与测试使用。", "Disclaimer: This tool is for learning and testing only." },
+    { "使用注入功能可能违反相关条款或造成数据损坏等后果，", "Injection may violate terms or cause data loss," },
+    { "请自行承担所有风险与责任。", "use at your own risk." },
+    { "构建时间: %s %s", "Build time: %s %s" },
+    { "免责声明", "Disclaimer" },
+    { "免责声明：本工具为第三方非官方程序，使用可能违反游戏条款并导致封号等后果，作者不承担任何责任。\n"
+      "如有侵权请联系删除。\n\n"
+      "是否继续？",
+      "Disclaimer: This is an unofficial third-party tool. Using it may violate game terms and lead to penalties. The author assumes no responsibility.\n"
+      "If there is any infringement, please contact for removal.\n\n"
+      "Continue?" }
+};
+
+static const char* T(TextKey key)
+{
+    const TextEntry& entry = kTextTable[static_cast<size_t>(key)];
+    int lang_index = ClampLanguageIndex(g_language);
+    if (lang_index == static_cast<int>(Language::EnUS) && entry.en && entry.en[0] != '\0')
+        return entry.en;
+    return entry.zh;
+}
+
+static const char* TByLanguage(TextKey key, Language lang)
+{
+    const TextEntry& entry = kTextTable[static_cast<size_t>(key)];
+    if (lang == Language::EnUS && entry.en && entry.en[0] != '\0')
+        return entry.en;
+    return entry.zh;
+}
+
+static std::wstring TW(TextKey key)
+{
+    return Utf8ToWide(T(key));
+}
+
+static std::string BuildComboItems(const std::vector<const char*>& items)
+{
+    std::string result;
+    for (const char* item : items)
+    {
+        result += item ? item : "";
+        result.push_back('\0');
+    }
+    result.push_back('\0');
+    return result;
+}
+
+static void RefreshLanguageItems()
+{
+    g_theme_items = BuildComboItems({ T(TextKey::ThemeFollowSystem), T(TextKey::ThemeDark), T(TextKey::ThemeLight) });
+    std::vector<const char*> items;
+    items.reserve((size_t)(sizeof(kLanguageOptions) / sizeof(kLanguageOptions[0])));
+    for (size_t i = 0; i < (sizeof(kLanguageOptions) / sizeof(kLanguageOptions[0])); ++i)
+        items.push_back(TByLanguage(kLanguageOptions[i].name_key, kLanguageOptions[i].id));
+    g_language_items = BuildComboItems(items);
+}
+
+static void RenderLanguagePromptModal(float scale)
+{
+    if (!g_show_language_prompt)
+        return;
+
+    static bool popup_opened = false;
+    
+    if (g_show_language_prompt && !popup_opened)
+    {
+        g_language_prompt_choice = ClampLanguageIndex(g_language);
+        ImGui::OpenPopup("##language_prompt");
+        popup_opened = true;
+    }
+
+    HMONITOR monitor = MonitorFromPoint(POINT{ 0, 0 }, MONITOR_DEFAULTTOPRIMARY);
+    MONITORINFO mi = { sizeof(mi) };
+    if (GetMonitorInfo(monitor, &mi))
+    {
+        int screen_width = mi.rcWork.right - mi.rcWork.left;
+        int screen_height = mi.rcWork.bottom - mi.rcWork.top;
+        float center_x = (float)(mi.rcWork.left + screen_width / 2);
+        float center_y = (float)(mi.rcWork.top + screen_height / 2);
+        ImGui::SetNextWindowPos(ImVec2(center_x, center_y), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    }
+    
+    if (ImGui::BeginPopupModal("##language_prompt", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+    {
+        ImGui::TextUnformatted(TByLanguage(TextKey::LanguagePromptTitle, (g_language_prompt_choice == static_cast<int>(Language::EnUS)) ? Language::EnUS : Language::ZhCN));
+        ImGui::Separator();
+        ImGui::TextUnformatted(TByLanguage(TextKey::LanguagePromptBody, (g_language_prompt_choice == static_cast<int>(Language::EnUS)) ? Language::EnUS : Language::ZhCN));
+        ImGui::Dummy(ImVec2(0.0f, 6.0f * scale));
+        ImGui::TextDisabled(TByLanguage(TextKey::LanguagePromptHint, (g_language_prompt_choice == static_cast<int>(Language::EnUS)) ? Language::EnUS : Language::ZhCN));
+        ImGui::Separator();
+
+        const int count = (int)(sizeof(kLanguageOptions) / sizeof(kLanguageOptions[0]));
+        for (int i = 0; i < count; ++i)
+        {
+            ImGui::RadioButton(TByLanguage(kLanguageOptions[i].name_key, kLanguageOptions[i].id), &g_language_prompt_choice, i);
+        }
+
+        ImGui::Dummy(ImVec2(0.0f, 6.0f * scale));
+        if (ImGui::Button(TByLanguage(TextKey::LanguagePromptConfirm, (g_language_prompt_choice == static_cast<int>(Language::EnUS)) ? Language::EnUS : Language::ZhCN)))
+        {
+            g_language = ClampLanguageIndex(g_language_prompt_choice);
+            g_config.language = g_language;
+            g_config.language_set = true;
+            SaveConfig(g_config);
+            RefreshLanguageItems();
+            g_show_language_prompt = false;
+            popup_opened = false;
+            ImGui::CloseCurrentPopup();
+            
+            if (!g_config.disclaimer_accepted)
+            {
+                g_show_disclaimer_prompt = true;
+            }
+        }
+        ImGui::EndPopup();
+    }
+    
+    if (!ImGui::IsPopupOpen("##language_prompt") && popup_opened)
+    {
+        popup_opened = false;
+        g_show_language_prompt = false;
+    }
+}
+
+static void RenderDisclaimerModal(float scale)
+{
+    if (!g_show_disclaimer_prompt)
+        return;
+
+    static bool popup_opened = false;
+    
+    if (g_show_disclaimer_prompt && !popup_opened)
+    {
+        ImGui::OpenPopup("##disclaimer_prompt");
+        popup_opened = true;
+    }
+
+    HMONITOR monitor = MonitorFromPoint(POINT{ 0, 0 }, MONITOR_DEFAULTTOPRIMARY);
+    MONITORINFO mi = { sizeof(mi) };
+    if (GetMonitorInfo(monitor, &mi))
+    {
+        int screen_width = mi.rcWork.right - mi.rcWork.left;
+        int screen_height = mi.rcWork.bottom - mi.rcWork.top;
+        float center_x = (float)(mi.rcWork.left + screen_width / 2);
+        float center_y = (float)(mi.rcWork.top + screen_height / 2);
+        float window_width = 500.0f * scale;
+        float window_height = 280.0f * scale;
+        ImGui::SetNextWindowSize(ImVec2(window_width, window_height), ImGuiCond_FirstUseEver);
+        ImGui::SetNextWindowPos(ImVec2(center_x, center_y), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    }
+    
+    if (ImGui::BeginPopupModal("##disclaimer_prompt", nullptr, ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize))
+    {
+        ImGui::TextUnformatted(T(TextKey::DisclaimerDialogTitle));
+        ImGui::Separator();
+        
+        ImGui::BeginChild("##disclaimer_text", ImVec2(0, 150.0f * scale), true, ImGuiWindowFlags_None);
+        ImGui::PushTextWrapPos(0.0f);
+        ImGui::TextWrapped("%s", T(TextKey::DisclaimerDialogBody));
+        ImGui::PopTextWrapPos();
+        ImGui::EndChild();
+        
+        ImGui::Dummy(ImVec2(0.0f, 6.0f * scale));
+        
+        if (ImGui::Button(T(TextKey::CommonOk), ImVec2(100.0f * scale, 0)))
+        {
+            g_config.disclaimer_accepted = true;
+            SaveConfig(g_config);
+            g_show_disclaimer_prompt = false;
+            popup_opened = false;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button(T(TextKey::CommonCancel), ImVec2(100.0f * scale, 0)))
+        {
+            g_show_disclaimer_prompt = false;
+            popup_opened = false;
+            ImGui::CloseCurrentPopup();
+            PostQuitMessage(0);
+        }
+        ImGui::EndPopup();
+    }
+
+    if (!ImGui::IsPopupOpen("##disclaimer_prompt") && popup_opened)
+    {
+        popup_opened = false;
+        g_show_disclaimer_prompt = false;
+    }
+}
 
 #ifndef DWMWA_USE_IMMERSIVE_DARK_MODE
 #define DWMWA_USE_IMMERSIVE_DARK_MODE 20
@@ -220,6 +593,8 @@ static void LoadConfig(LauncherConfig* config)
         config->use_custom_args = j.value("use_custom_args", config->use_custom_args);
         config->custom_args = j.value("custom_args", config->custom_args);
         config->theme_mode = j.value("theme_mode", config->theme_mode);
+        config->language = j.value("language", config->language);
+        config->language_set = j.value("language_set", config->language_set);
         config->disclaimer_accepted = j.value("disclaimer_accepted", config->disclaimer_accepted);
     }
     catch (...)
@@ -241,6 +616,8 @@ static void SaveConfig(const LauncherConfig& config)
     j["use_custom_args"] = config.use_custom_args;
     j["custom_args"] = config.custom_args;
     j["theme_mode"] = config.theme_mode;
+    j["language"] = config.language;
+    j["language_set"] = config.language_set;
     j["disclaimer_accepted"] = config.disclaimer_accepted;
     std::ofstream file(g_config_path, std::ios::trunc);
     if (!file.is_open())
@@ -256,7 +633,8 @@ static std::wstring SelectGameExecutable(HWND owner)
     ofn.lStructSize = sizeof(ofn);
     ofn.hwndOwner = owner;
     ofn.lpstrFilter = L"Endfield.exe\0Endfield.exe\0";
-    ofn.lpstrTitle = L"请选择 Endfield.exe";
+    std::wstring title = TW(TextKey::SelectEndfieldTitle);
+    ofn.lpstrTitle = title.c_str();
     ofn.lpstrFile = file_path;
     ofn.nMaxFile = MAX_PATH;
     ofn.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST;
@@ -267,7 +645,7 @@ static std::wstring SelectGameExecutable(HWND owner)
         std::wstring filename = (pos == std::wstring::npos) ? selected : selected.substr(pos + 1);
         if (_wcsicmp(filename.c_str(), L"Endfield.exe") == 0)
             return selected;
-        MessageBoxW(owner, L"请选择 Endfield.exe。", L"提示", MB_OK | MB_ICONWARNING);
+        MessageBoxW(owner, TW(TextKey::SelectEndfieldTip).c_str(), TW(TextKey::HintTitle).c_str(), MB_OK | MB_ICONWARNING);
     }
     return L"";
 }
@@ -565,33 +943,33 @@ static bool InjectDllLoadLibrary(HANDLE process, const std::wstring& dll_path, s
     if (!process)
     {
         if (error)
-            *error = L"Invalid process handle.";
-        return false;
-    }
+            *error = TW(TextKey::ErrorInvalidProcessHandle);
+            return false;
+        }
     if (!FileExistsW(dll_path))
     {
         if (error)
-            *error = L"UnlockerIsland.dll not found.";
-        return false;
-    }
+            *error = TW(TextKey::ErrorDllNotFound);
+            return false;
+        }
 
     size_t bytes = (dll_path.size() + 1) * sizeof(wchar_t);
     LPVOID remote_mem = VirtualAllocEx(process, nullptr, bytes, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
     if (!remote_mem)
     {
         if (error)
-            *error = L"VirtualAllocEx failed.";
-        return false;
-    }
+            *error = TW(TextKey::ErrorVirtualAllocFailed);
+            return false;
+        }
 
     SIZE_T written = 0;
     if (!WriteProcessMemory(process, remote_mem, dll_path.c_str(), bytes, &written) || written != bytes)
     {
         VirtualFreeEx(process, remote_mem, 0, MEM_RELEASE);
         if (error)
-            *error = L"WriteProcessMemory failed.";
-        return false;
-    }
+            *error = TW(TextKey::ErrorWriteProcessMemoryFailed);
+            return false;
+        }
 
     HMODULE kernel = GetModuleHandleW(L"kernel32.dll");
     FARPROC load_library = kernel ? GetProcAddress(kernel, "LoadLibraryW") : nullptr;
@@ -599,9 +977,9 @@ static bool InjectDllLoadLibrary(HANDLE process, const std::wstring& dll_path, s
     {
         VirtualFreeEx(process, remote_mem, 0, MEM_RELEASE);
         if (error)
-            *error = L"LoadLibraryW not available.";
-        return false;
-    }
+            *error = TW(TextKey::ErrorLoadLibraryMissing);
+            return false;
+        }
 
     HANDLE thread = CreateRemoteThread(process, nullptr, 0,
         reinterpret_cast<LPTHREAD_START_ROUTINE>(load_library), remote_mem, 0, nullptr);
@@ -609,9 +987,9 @@ static bool InjectDllLoadLibrary(HANDLE process, const std::wstring& dll_path, s
     {
         VirtualFreeEx(process, remote_mem, 0, MEM_RELEASE);
         if (error)
-            *error = L"CreateRemoteThread failed.";
-        return false;
-    }
+            *error = TW(TextKey::ErrorCreateRemoteThreadFailed);
+            return false;
+        }
 
     WaitForSingleObject(thread, 5000);
     DWORD exit_code = 0;
@@ -621,9 +999,9 @@ static bool InjectDllLoadLibrary(HANDLE process, const std::wstring& dll_path, s
     if (exit_code == 0)
     {
         if (error)
-            *error = L"LoadLibraryW failed in target process.";
-        return false;
-    }
+            *error = TW(TextKey::ErrorLoadLibraryFailed);
+            return false;
+        }
     return true;
 }
 
@@ -632,15 +1010,15 @@ static bool LaunchGameWithOptionalInjection(const LauncherConfig& config, std::w
     if (!g_is_admin)
     {
         if (error)
-            *error = L"请以管理员权限运行启动器。";
-        return false;
-    }
+            *error = TW(TextKey::ErrorNeedAdmin);
+            return false;
+        }
     if (config.game_path.empty() || !FileExistsW(config.game_path))
     {
         if (error)
-            *error = L"未找到游戏可执行文件。请选择游戏路径。";
-        return false;
-    }
+            *error = TW(TextKey::ErrorGameNotFound);
+            return false;
+        }
 
     std::wstring current_dir = GetDirectoryFromPath(config.game_path);
     std::wstring args = BuildLaunchArguments(config);
@@ -666,9 +1044,9 @@ static bool LaunchGameWithOptionalInjection(const LauncherConfig& config, std::w
     if (!ok)
     {
         if (error)
-            *error = L"CreateProcess failed.";
-        return false;
-    }
+            *error = TW(TextKey::ErrorCreateProcessFailed);
+            return false;
+        }
 
     bool result = true;
     if (config.inject_enabled)
@@ -797,7 +1175,15 @@ static void RenderWinUI(float scale)
     static float indicator_h = 0.0f;
     static bool custom_args_inited = false;
     static char custom_args_buf[512] = {};
-    static std::string launch_status = "就绪";
+    static bool window_positioned = false;
+    enum class LaunchStatusState
+    {
+        Ready,
+        Started,
+        ErrorText
+    };
+    static LaunchStatusState launch_status_state = LaunchStatusState::Ready;
+    static std::string launch_status_text;
 
     const ImVec2 window_size(1300.0f * scale, 800.0f * scale);
     const ImVec2 window_pos(60.0f * scale, 40.0f * scale);
@@ -818,16 +1204,31 @@ static void RenderWinUI(float scale)
         ImVec2(g_min_window_w * scale, g_min_window_h * scale),
         ImVec2(FLT_MAX, FLT_MAX));
     ImGui::SetNextWindowSize(window_size, ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowPos(window_pos, ImGuiCond_FirstUseEver);
-    if (floating_viewport_id == 0)
-        floating_viewport_id = ImHashStr("MainFloatingViewport");
-    ImGui::SetNextWindowViewport(floating_viewport_id);
+    
+    // 获取主显示器信息并计算居中位置
+    if (!window_positioned)
+    {
+        HMONITOR monitor = MonitorFromPoint(POINT{ 0, 0 }, MONITOR_DEFAULTTOPRIMARY);
+        MONITORINFO mi = { sizeof(mi) };
+        if (GetMonitorInfo(monitor, &mi))
+        {
+            int screen_width = mi.rcWork.right - mi.rcWork.left;
+            int screen_height = mi.rcWork.bottom - mi.rcWork.top;
+            float center_x = (float)(mi.rcWork.left + screen_width / 2);
+            float center_y = (float)(mi.rcWork.top + screen_height / 2);
+            ImGui::SetNextWindowPos(ImVec2(center_x, center_y), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+        }
+        window_positioned = true;
+    }
     ImGui::PushStyleColor(ImGuiCol_WindowBg, g_app_bg);
     ImGui::Begin("EndField.Launcher", nullptr, window_flags);
     ImGui::PopStyleColor();
 
     if (g_font_main)
         ImGui::PushFont(g_font_main, 0.0f);
+
+    RenderLanguagePromptModal(scale);
+    RenderDisclaimerModal(scale);
 
     HWND viewport_hwnd = (HWND)ImGui::GetWindowViewport()->PlatformHandle;
     if (viewport_hwnd && viewport_hwnd != g_hwnd)
@@ -923,13 +1324,13 @@ static void RenderWinUI(float scale)
     ImVec2 tab_min[3] = {};
     ImVec2 tab_max[3] = {};
 
-    if (NavigationItem("启动游戏", active_page == 0, nav_width - 16.0f * scale, 40.0f * scale, scale, &tab_min[0], &tab_max[0]))
+    if (NavigationItem(T(TextKey::NavLaunch), active_page == 0, nav_width - 16.0f * scale, 40.0f * scale, scale, &tab_min[0], &tab_max[0]))
         active_page = 0;
     ImGui::Dummy(ImVec2(0.0f, 6.0f * scale));
-    if (NavigationItem("窗口设置", active_page == 1, nav_width - 16.0f * scale, 40.0f * scale, scale, &tab_min[1], &tab_max[1]))
+    if (NavigationItem(T(TextKey::NavWindow), active_page == 1, nav_width - 16.0f * scale, 40.0f * scale, scale, &tab_min[1], &tab_max[1]))
         active_page = 1;
     ImGui::Dummy(ImVec2(0.0f, 6.0f * scale));
-    if (NavigationItem("关于", active_page == 2, nav_width - 16.0f * scale, 40.0f * scale, scale, &tab_min[2], &tab_max[2]))
+    if (NavigationItem(T(TextKey::NavAbout), active_page == 2, nav_width - 16.0f * scale, 40.0f * scale, scale, &tab_min[2], &tab_max[2]))
         active_page = 2;
 
     if (tab_max[active_page].y > tab_min[active_page].y)
@@ -958,8 +1359,8 @@ static void RenderWinUI(float scale)
     ImGui::Dummy(ImVec2(0.0f, 6.0f * scale));
     if (g_font_title)
         ImGui::PushFont(g_font_title, 0.0f);
-    const char* page_title = active_page == 0 ? "启动游戏" : (active_page == 1 ? "窗口设置" : "关于");
-    const char* page_subtitle = active_page == 0 ? "启动与注入" : (active_page == 1 ? "外观与偏好" : "说明");
+    const char* page_title = active_page == 0 ? T(TextKey::PageTitleLaunch) : (active_page == 1 ? T(TextKey::PageTitleWindow) : T(TextKey::PageTitleAbout));
+    const char* page_subtitle = active_page == 0 ? T(TextKey::PageSubtitleLaunch) : (active_page == 1 ? T(TextKey::PageSubtitleWindow) : T(TextKey::PageSubtitleAbout));
     ImGui::TextColored(g_accent, "%s", page_title);
     ImGui::SameLine();
     ImGui::TextDisabled("%s", page_subtitle);
@@ -983,18 +1384,18 @@ static void RenderWinUI(float scale)
 
         ImGui::PushStyleColor(ImGuiCol_ChildBg, g_card_bg);
         ImGui::BeginChild("##game_path", ImVec2(0.0f, 0.0f), ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY, ImGuiWindowFlags_NoScrollbar);
-        ImGui::TextUnformatted("游戏路径");
+        ImGui::TextUnformatted(T(TextKey::GamePath));
         ImGui::PushTextWrapPos(0.0f);
-        ImGui::TextUnformatted(game_path_utf8.empty() ? "未设置" : game_path_utf8.c_str());
+        ImGui::TextUnformatted(game_path_utf8.empty() ? T(TextKey::NotSet) : game_path_utf8.c_str());
         ImGui::PopTextWrapPos();
         if (!g_is_admin)
         {
             ImGui::TextColored(ImVec4(0.98f, 0.45f, 0.45f, 1.0f),
-                "游戏文件管理/切换游戏服务器/注入功能需要管理员权限，目前无法获取权限，相关功能已禁用。");
+                T(TextKey::AdminRequiredForFeatures));
         }
         if (!game_valid)
-            ImGui::TextColored(ImVec4(0.98f, 0.55f, 0.55f, 1.0f), "未找到游戏，请选择路径。");
-        if (ImGui::Button("选择游戏位置"))
+            ImGui::TextColored(ImVec4(0.98f, 0.55f, 0.55f, 1.0f), T(TextKey::GameNotFoundHint));
+        if (ImGui::Button(T(TextKey::SelectGameLocation)))
         {
             std::wstring selected = SelectGameExecutable(viewport_hwnd);
             if (!selected.empty())
@@ -1004,7 +1405,7 @@ static void RenderWinUI(float scale)
             }
         }
         ImGui::SameLine();
-        if (ImGui::Button("自动获取游戏路径"))
+        if (ImGui::Button(T(TextKey::AutoDetectGamePath)))
         {
             std::wstring detected;
             DWORD pid = 0;
@@ -1021,37 +1422,37 @@ static void RenderWinUI(float scale)
                         CloseHandle(process);
                     }
                 }
-                MessageBoxW(viewport_hwnd, L"获取成功，已自动关闭游戏，请使用本启动器的启动游戏功能。", L"提示", MB_OK | MB_ICONINFORMATION);
+                MessageBoxW(viewport_hwnd, TW(TextKey::AutoDetectSuccess).c_str(), TW(TextKey::HintTitle).c_str(), MB_OK | MB_ICONINFORMATION);
             }
             else
             {
-                MessageBoxW(viewport_hwnd, L"未检测到正在运行的游戏进程，请先启动游戏后再点击获取。", L"提示", MB_OK | MB_ICONWARNING);
+                MessageBoxW(viewport_hwnd, TW(TextKey::AutoDetectFail).c_str(), TW(TextKey::HintTitle).c_str(), MB_OK | MB_ICONWARNING);
             }
         }
         ImGui::EndChild();
 
         ImGui::Dummy(ImVec2(0.0f, 10.0f * scale));
         ImGui::BeginChild("##inject", ImVec2(0.0f, 0.0f), ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY, ImGuiWindowFlags_NoScrollbar);
-        ImGui::TextUnformatted("注入");
+        ImGui::TextUnformatted(T(TextKey::SectionInject));
         ImGui::Separator();
-        ImGui::TextColored(ImVec4(0.98f, 0.45f, 0.45f, 1.0f), "注入功能非常危险且有可能会造成严重后果，请谨慎使用。");
+        ImGui::TextColored(ImVec4(0.98f, 0.45f, 0.45f, 1.0f), T(TextKey::InjectWarning));
         if (!g_is_admin)
-            ImGui::TextColored(ImVec4(0.98f, 0.45f, 0.45f, 1.0f), "未以管理员权限运行，注入功能已禁用。");
+            ImGui::TextColored(ImVec4(0.98f, 0.45f, 0.45f, 1.0f), T(TextKey::InjectDisabledNoAdmin));
 
         ImGui::BeginDisabled(!g_is_admin);
-        if (ImGui::Checkbox("启用注入功能 (将模块注入游戏，以便实现一些高级但危险的功能)", &g_config.inject_enabled))
+        if (ImGui::Checkbox(T(TextKey::EnableInjection), &g_config.inject_enabled))
             SaveConfig(g_config);
         ImGui::BeginDisabled(!g_config.inject_enabled);
-        if (ImGui::Checkbox("开启解帧", &g_config.inject_unlock_fps))
+        if (ImGui::Checkbox(T(TextKey::UnlockFps), &g_config.inject_unlock_fps))
             SaveConfig(g_config);
         ImGui::BeginDisabled(!g_config.inject_unlock_fps);
-        ImGui::InputInt("目标帧数", &g_config.inject_target_fps);
-        ImGui::TextUnformatted("快捷帧数");
+        ImGui::InputInt(T(TextKey::TargetFps), &g_config.inject_target_fps);
+        ImGui::TextUnformatted(T(TextKey::QuickFps));
         const int quick_fps[] = { 30, 45, 60, 120, 144, 165, 200, 240, (std::numeric_limits<int32_t>::max)() };
         for (int i = 0; i < (int)(sizeof(quick_fps) / sizeof(quick_fps[0])); ++i)
         {
             const int value = quick_fps[i];
-            const char* label = (value == (std::numeric_limits<int32_t>::max)()) ? "21亿(不限制)" : nullptr;
+            const char* label = (value == (std::numeric_limits<int32_t>::max)()) ? T(TextKey::QuickFpsUnlimited) : nullptr;
             char buf[32] = {};
             if (!label)
             {
@@ -1081,19 +1482,19 @@ static void RenderWinUI(float scale)
 
         ImGui::Dummy(ImVec2(0.0f, 10.0f * scale));
         ImGui::BeginChild("##launch_args", ImVec2(0.0f, 0.0f), ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY, ImGuiWindowFlags_NoScrollbar);
-        ImGui::TextUnformatted("启动参数");
+        ImGui::TextUnformatted(T(TextKey::LaunchArgs));
         ImGui::Separator();
-        if (ImGui::Checkbox("使用启动参数", &g_config.use_launch_args))
+        if (ImGui::Checkbox(T(TextKey::UseLaunchArgs), &g_config.use_launch_args))
             SaveConfig(g_config);
 
         ImGui::BeginDisabled(!g_config.use_launch_args);
-        if (ImGui::Checkbox("使用 -popupwindow", &g_config.use_popupwindow))
+        if (ImGui::Checkbox(T(TextKey::UsePopupWindow), &g_config.use_popupwindow))
             SaveConfig(g_config);
-        if (ImGui::Checkbox("自定义启动参数", &g_config.use_custom_args))
+        if (ImGui::Checkbox(T(TextKey::CustomLaunchArgs), &g_config.use_custom_args))
             SaveConfig(g_config);
         if (g_config.use_custom_args)
         {
-            ImGui::InputText("参数", custom_args_buf, sizeof(custom_args_buf));
+            ImGui::InputText(T(TextKey::ArgsLabel), custom_args_buf, sizeof(custom_args_buf));
             if (ImGui::IsItemDeactivatedAfterEdit())
             {
                 g_config.custom_args = custom_args_buf;
@@ -1107,34 +1508,56 @@ static void RenderWinUI(float scale)
         bool can_launch = game_valid && g_is_admin;
         if (!can_launch)
             ImGui::BeginDisabled();
-        if (ImGui::Button("启动游戏", ImVec2(140.0f * scale, 0.0f)))
+        if (ImGui::Button(T(TextKey::LaunchGame), ImVec2(140.0f * scale, 0.0f)))
         {
             std::wstring error;
             if (LaunchGameWithOptionalInjection(g_config, &error))
-                launch_status = "已启动";
+            {
+                launch_status_state = LaunchStatusState::Started;
+                launch_status_text.clear();
+            }
             else
-                launch_status = WideToUtf8(error);
+            {
+                launch_status_state = LaunchStatusState::ErrorText;
+                launch_status_text = WideToUtf8(error);
+            }
         }
         if (!can_launch)
             ImGui::EndDisabled();
         ImGui::SameLine();
-        ImGui::Text("状态: %s", launch_status.c_str());
+        const char* status_text = nullptr;
+        if (launch_status_state == LaunchStatusState::Ready)
+            status_text = T(TextKey::LaunchStatusReady);
+        else if (launch_status_state == LaunchStatusState::Started)
+            status_text = T(TextKey::LaunchStatusStarted);
+        else
+            status_text = launch_status_text.c_str();
+        ImGui::Text(T(TextKey::StatusLabel), status_text);
         ImGui::PopStyleColor();
     }
     else if (active_page == 1)
     {
         ImGui::PushStyleColor(ImGuiCol_ChildBg, g_card_bg);
         ImGui::BeginChild("##appearance", ImVec2(0.0f, 220.0f * scale), true, ImGuiWindowFlags_NoScrollbar);
-        ImGui::TextUnformatted("外观");
+        ImGui::TextUnformatted(T(TextKey::SectionAppearance));
         ImGui::Separator();
-        const char* theme_items = "跟随系统\0深色\0浅色\0";
-        if (ImGui::Combo("主题模式", &g_theme_mode, theme_items))
+        const char* theme_items = g_theme_items.c_str();
+        if (ImGui::Combo(T(TextKey::ThemeMode), &g_theme_mode, theme_items))
         {
             g_need_theme_refresh = true;
             g_config.theme_mode = g_theme_mode;
             SaveConfig(g_config);
         }
-        ImGui::TextDisabled("跟随Windows系统设置修改界面颜色。");
+        ImGui::TextDisabled(T(TextKey::ThemeHint));
+        const char* language_items = g_language_items.c_str();
+        if (ImGui::Combo(T(TextKey::LanguageLabel), &g_language, language_items))
+        {
+            g_language = ClampLanguageIndex(g_language);
+            g_config.language = g_language;
+            g_config.language_set = true;
+            SaveConfig(g_config);
+            RefreshLanguageItems();
+        }
         ImGui::EndChild();
         ImGui::PopStyleColor();
     }
@@ -1142,17 +1565,17 @@ static void RenderWinUI(float scale)
     {
         ImGui::PushStyleColor(ImGuiCol_ChildBg, g_card_bg);
         ImGui::BeginChild("##about", ImVec2(0.0f, 220.0f * scale), true, ImGuiWindowFlags_NoScrollbar);
-        ImGui::TextUnformatted("关于");
+        ImGui::TextUnformatted(T(TextKey::SectionAbout));
         ImGui::Separator();
-        ImGui::TextUnformatted("本项目开源地址：");
+        ImGui::TextUnformatted(T(TextKey::ProjectSource));
         ImGui::SameLine();
         RenderLinkText("GitHub", "https://github.com/isxlan0/EndField.Fps.UnlockerIsland", ImVec4(0.55f, 0.75f, 1.0f, 1.0f), ImVec4(0.65f, 0.85f, 1.0f, 1.0f));
         ImGui::Dummy(ImVec2(0.0f, 6.0f * scale));
-        ImGui::TextColored(ImVec4(0.98f, 0.45f, 0.45f, 1.0f), "免责声明：本工具仅供学习与测试使用。");
-        ImGui::TextColored(ImVec4(0.98f, 0.45f, 0.45f, 1.0f), "使用注入功能可能违反相关条款或造成数据损坏等后果，");
-        ImGui::TextColored(ImVec4(0.98f, 0.45f, 0.45f, 1.0f), "请自行承担所有风险与责任。");
+        ImGui::TextColored(ImVec4(0.98f, 0.45f, 0.45f, 1.0f), T(TextKey::DisclaimerLine1));
+        ImGui::TextColored(ImVec4(0.98f, 0.45f, 0.45f, 1.0f), T(TextKey::DisclaimerLine2));
+        ImGui::TextColored(ImVec4(0.98f, 0.45f, 0.45f, 1.0f), T(TextKey::DisclaimerLine3));
         ImGui::Dummy(ImVec2(0.0f, 6.0f * scale));
-        ImGui::Text("构建时间: %s %s", __DATE__, __TIME__);
+        ImGui::Text(T(TextKey::BuildTime), __DATE__, __TIME__);
         ImGui::EndChild();
         ImGui::PopStyleColor();
     }
@@ -1192,18 +1615,22 @@ int main(int, char**)
 
     LoadConfig(&g_config);
     g_theme_mode = g_config.theme_mode;
-    if (!g_config.disclaimer_accepted)
+    g_language = ClampLanguageIndex(g_config.language);
+    g_config.language = g_language;
+    
+    RefreshLanguageItems();
+    
+    if (!g_config.language_set)
     {
-        int res = MessageBoxW(nullptr,
-            L"免责声明：本工具为第三方非官方程序，使用可能违反游戏条款并导致封号等后果，作者不承担任何责任。\n"
-            L"如有侵权请联系删除。\n\n"
-            L"是否继续？",
-            L"免责声明", MB_OKCANCEL | MB_ICONWARNING);
-        if (res != IDOK)
-            return 0;
-        g_config.disclaimer_accepted = true;
-        SaveConfig(g_config);
+        g_language_prompt_choice = g_language;
+        g_show_language_prompt = true;
+        // 语言选择完成后会自动显示免责声明
     }
+    else if (!g_config.disclaimer_accepted)
+    {
+        g_show_disclaimer_prompt = true;
+    }
+    
     g_is_admin = IsRunningAsAdmin();
     InitSharedMemory();
 
