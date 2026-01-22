@@ -1,0 +1,1544 @@
+﻿// Dear ImGui: standalone example application for Windows API + DirectX 11
+
+// Learn about Dear ImGui:
+// - FAQ                  https://dearimgui.com/faq
+// - Getting Started      https://dearimgui.com/getting-started
+// - Documentation        https://dearimgui.com/docs (same as your local docs/ folder).
+// - Introduction, links and more at the top of imgui.cpp
+
+#include "ImGui\imgui.h"
+#include "ImGui\imgui_internal.h"
+#include "ImGui\imgui_impl_win32.h"
+#include "ImGui\imgui_impl_dx11.h"
+#include <d3d11.h>
+#include <float.h>
+#include <cstring>
+#include <vector>
+#include <string>
+#include <fstream>
+#include <sstream>
+#include <limits>
+#include <windows.h>
+#include <windowsx.h>
+#include <dwmapi.h>
+#include <winreg.h>
+#include <commdlg.h>
+#include <tlhelp32.h>
+#include <nlohmann/json.hpp>
+#include "..\\shared.h"
+
+#if defined(_MSC_VER)
+#pragma execution_character_set("utf-8")
+#endif
+
+
+static ID3D11Device* g_pd3dDevice = nullptr;
+static ID3D11DeviceContext* g_pd3dDeviceContext = nullptr;
+static IDXGISwapChain* g_pSwapChain = nullptr;
+static bool                     g_SwapChainOccluded = false;
+static UINT                     g_ResizeWidth = 0, g_ResizeHeight = 0;
+static ID3D11RenderTargetView* g_mainRenderTargetView = nullptr;
+static bool                     g_in_sizemove = false;
+
+static HWND                     g_hwnd = nullptr;
+static HWND                     g_titlebar_hwnd = nullptr;
+static HWND                     g_host_hwnd = nullptr;
+
+static ImFont* g_font_main = nullptr;
+static ImFont* g_font_title = nullptr;
+
+static bool g_dark_mode = true;
+static bool g_need_theme_refresh = true;
+static ULONGLONG g_last_theme_check = 0;
+static int g_theme_mode = 0; 
+static float g_min_window_w = 820.0f;
+static float g_min_window_h = 560.0f;
+static std::vector<HWND> g_styled_hwnds;
+
+struct TitleBarState
+{
+    RECT bar;
+    RECT btn_min;
+    RECT btn_close;
+};
+
+static TitleBarState g_titlebar = {};
+
+using json = nlohmann::json;
+
+struct LauncherConfig
+{
+    std::wstring game_path;
+    bool inject_enabled = true;
+    bool inject_unlock_fps = false;
+    int inject_target_fps = 120;
+    bool use_launch_args = true;
+    bool use_popupwindow = true;
+    bool use_custom_args = false;
+    std::string custom_args;
+    int theme_mode = 0;
+    bool disclaimer_accepted = false;
+};
+
+static LauncherConfig g_config = {};
+static std::wstring g_config_path;
+
+static ImVec4 g_clear_color = ImVec4(0.08f, 0.08f, 0.08f, 1.0f);
+static ImVec4 g_accent = ImVec4(0.00f, 0.47f, 0.83f, 1.0f);
+static ImVec4 g_app_bg = ImVec4(0.10f, 0.10f, 0.11f, 1.0f);
+static ImVec4 g_panel_bg = ImVec4(0.13f, 0.13f, 0.14f, 1.0f);
+static ImVec4 g_card_bg = ImVec4(0.16f, 0.16f, 0.18f, 1.0f);
+static ImVec4 g_nav_bg = ImVec4(0.11f, 0.11f, 0.12f, 1.0f);
+static ImVec4 g_nav_hover = ImVec4(0.16f, 0.16f, 0.18f, 1.0f);
+static ImVec4 g_nav_active = ImVec4(0.18f, 0.18f, 0.20f, 1.0f);
+static ImVec4 g_separator = ImVec4(0.26f, 0.26f, 0.28f, 1.0f);
+
+static HANDLE g_shared_map = nullptr;
+static SharedData* g_shared = nullptr;
+static SharedData g_shared_last = {};
+static bool g_is_admin = false;
+
+#ifndef DWMWA_USE_IMMERSIVE_DARK_MODE
+#define DWMWA_USE_IMMERSIVE_DARK_MODE 20
+#endif
+#ifndef DWMWA_USE_IMMERSIVE_DARK_MODE_BEFORE_20H1
+#define DWMWA_USE_IMMERSIVE_DARK_MODE_BEFORE_20H1 19
+#endif
+#ifndef DWMWA_SYSTEMBACKDROP_TYPE
+#define DWMWA_SYSTEMBACKDROP_TYPE 38
+#endif
+
+#pragma comment(lib, "dwmapi.lib")
+
+static ImVec4 ColorFromBytes(int r, int g, int b, int a = 255)
+{
+    return ImVec4(r / 255.0f, g / 255.0f, b / 255.0f, a / 255.0f);
+}
+
+static std::wstring Utf8ToWide(const std::string& text)
+{
+    if (text.empty())
+        return L"";
+    int len = MultiByteToWideChar(CP_UTF8, 0, text.c_str(), -1, nullptr, 0);
+    if (len <= 1)
+        return L"";
+    std::wstring wide;
+    wide.resize(static_cast<size_t>(len - 1));
+    MultiByteToWideChar(CP_UTF8, 0, text.c_str(), -1, wide.data(), len);
+    return wide;
+}
+
+static std::string WideToUtf8(const std::wstring& text)
+{
+    if (text.empty())
+        return "";
+    int len = WideCharToMultiByte(CP_UTF8, 0, text.c_str(), -1, nullptr, 0, nullptr, nullptr);
+    if (len <= 1)
+        return "";
+    std::string utf8;
+    utf8.resize(static_cast<size_t>(len - 1));
+    WideCharToMultiByte(CP_UTF8, 0, text.c_str(), -1, utf8.data(), len, nullptr, nullptr);
+    return utf8;
+}
+
+static bool FileExistsW(const std::wstring& path)
+{
+    DWORD attr = GetFileAttributesW(path.c_str());
+    return attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY) == 0;
+}
+
+static std::wstring GetModuleDirectory()
+{
+    wchar_t buffer[MAX_PATH] = {};
+    DWORD len = GetModuleFileNameW(nullptr, buffer, MAX_PATH);
+    if (len == 0 || len >= MAX_PATH)
+        return L".";
+    std::wstring full(buffer, len);
+    size_t pos = full.find_last_of(L"\\/");
+    if (pos == std::wstring::npos)
+        return L".";
+    return full.substr(0, pos);
+}
+
+static std::wstring GetDefaultDllPath()
+{
+    std::wstring base = GetModuleDirectory();
+    std::wstring local = base + L"\\UnlockerIsland.dll";
+    if (FileExistsW(local))
+        return local;
+}
+
+static std::wstring GetDirectoryFromPath(const std::wstring& path)
+{
+    size_t pos = path.find_last_of(L"\\/");
+    if (pos == std::wstring::npos)
+        return L".";
+    return path.substr(0, pos);
+}
+
+static bool IsRunningAsAdmin()
+{
+    BOOL is_admin = FALSE;
+    PSID admin_group = nullptr;
+    SID_IDENTIFIER_AUTHORITY nt_authority = SECURITY_NT_AUTHORITY;
+    if (AllocateAndInitializeSid(&nt_authority, 2,
+        SECURITY_BUILTIN_DOMAIN_RID, DOMAIN_ALIAS_RID_ADMINS,
+        0, 0, 0, 0, 0, 0, &admin_group))
+    {
+        CheckTokenMembership(nullptr, admin_group, &is_admin);
+        FreeSid(admin_group);
+    }
+    return is_admin == TRUE;
+}
+
+static void LoadConfig(LauncherConfig* config)
+{
+    if (!config)
+        return;
+    if (g_config_path.empty())
+        g_config_path = GetModuleDirectory() + L"\\config.json";
+    if (!FileExistsW(g_config_path))
+        return;
+    std::ifstream file(g_config_path);
+    if (!file.is_open())
+        return;
+    std::stringstream buffer;
+    buffer << file.rdbuf();
+    file.close();
+    try
+    {
+        json j = json::parse(buffer.str(), nullptr, false);
+        if (j.is_discarded())
+            return;
+        if (j.contains("game_path"))
+            config->game_path = Utf8ToWide(j.value("game_path", ""));
+        config->inject_enabled = j.value("inject_enabled", config->inject_enabled);
+        config->inject_unlock_fps = j.value("inject_unlock_fps", config->inject_unlock_fps);
+        config->inject_target_fps = j.value("inject_target_fps", config->inject_target_fps);
+        config->use_launch_args = j.value("use_launch_args", config->use_launch_args);
+        config->use_popupwindow = j.value("use_popupwindow", config->use_popupwindow);
+        config->use_custom_args = j.value("use_custom_args", config->use_custom_args);
+        config->custom_args = j.value("custom_args", config->custom_args);
+        config->theme_mode = j.value("theme_mode", config->theme_mode);
+        config->disclaimer_accepted = j.value("disclaimer_accepted", config->disclaimer_accepted);
+    }
+    catch (...)
+    {
+    }
+}
+
+static void SaveConfig(const LauncherConfig& config)
+{
+    if (g_config_path.empty())
+        g_config_path = GetModuleDirectory() + L"\\config.json";
+    json j;
+    j["game_path"] = WideToUtf8(config.game_path);
+    j["inject_enabled"] = config.inject_enabled;
+    j["inject_unlock_fps"] = config.inject_unlock_fps;
+    j["inject_target_fps"] = config.inject_target_fps;
+    j["use_launch_args"] = config.use_launch_args;
+    j["use_popupwindow"] = config.use_popupwindow;
+    j["use_custom_args"] = config.use_custom_args;
+    j["custom_args"] = config.custom_args;
+    j["theme_mode"] = config.theme_mode;
+    j["disclaimer_accepted"] = config.disclaimer_accepted;
+    std::ofstream file(g_config_path, std::ios::trunc);
+    if (!file.is_open())
+        return;
+    file << j.dump(4);
+    file.close();
+}
+
+static std::wstring SelectGameExecutable(HWND owner)
+{
+    wchar_t file_path[MAX_PATH] = {};
+    OPENFILENAMEW ofn = {};
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner = owner;
+    ofn.lpstrFilter = L"Endfield.exe\0Endfield.exe\0";
+    ofn.lpstrTitle = L"请选择 Endfield.exe";
+    ofn.lpstrFile = file_path;
+    ofn.nMaxFile = MAX_PATH;
+    ofn.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST;
+    if (GetOpenFileNameW(&ofn))
+    {
+        std::wstring selected(file_path);
+        size_t pos = selected.find_last_of(L"\\/");
+        std::wstring filename = (pos == std::wstring::npos) ? selected : selected.substr(pos + 1);
+        if (_wcsicmp(filename.c_str(), L"Endfield.exe") == 0)
+            return selected;
+        MessageBoxW(owner, L"请选择 Endfield.exe。", L"提示", MB_OK | MB_ICONWARNING);
+    }
+    return L"";
+}
+
+static bool FindRunningGamePath(std::wstring* out_path, DWORD* out_pid)
+{
+    HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snapshot == INVALID_HANDLE_VALUE)
+        return false;
+
+    PROCESSENTRY32W entry = {};
+    entry.dwSize = sizeof(entry);
+    std::wstring result;
+    DWORD pid = 0;
+    if (Process32FirstW(snapshot, &entry))
+    {
+        do
+        {
+            if (_wcsicmp(entry.szExeFile, L"Endfield.exe") == 0)
+            {
+                HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, entry.th32ProcessID);
+                if (process)
+                {
+                    wchar_t path[MAX_PATH] = {};
+                    DWORD size = (DWORD)(sizeof(path) / sizeof(path[0]));
+                    if (QueryFullProcessImageNameW(process, 0, path, &size))
+                    {
+                        result = path;
+                        pid = entry.th32ProcessID;
+                    }
+                    CloseHandle(process);
+                }
+                break;
+            }
+        } while (Process32NextW(snapshot, &entry));
+    }
+
+    CloseHandle(snapshot);
+    if (!result.empty())
+    {
+        if (out_path)
+            *out_path = result;
+        if (out_pid)
+            *out_pid = pid;
+        return true;
+    }
+    return false;
+}
+
+static bool ReadSystemDarkMode()
+{
+    DWORD value = 1;
+    DWORD size = sizeof(value);
+    if (RegGetValueW(HKEY_CURRENT_USER,
+        L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
+        L"AppsUseLightTheme", RRF_RT_REG_DWORD, nullptr, &value, &size) == ERROR_SUCCESS)
+        return value == 0;
+    return true;
+}
+
+static void ApplyTheme(bool dark, float scale)
+{
+    ImGuiStyle& style = ImGui::GetStyle();
+    style.WindowRounding = 8.0f * scale;
+    style.ChildRounding = 8.0f * scale;
+    style.FrameRounding = 6.0f * scale;
+    style.PopupRounding = 6.0f * scale;
+    style.WindowBorderSize = 1.0f * scale;
+    style.FrameBorderSize = 1.0f * scale;
+    style.ScrollbarSize = 12.0f * scale;
+    style.GrabRounding = 6.0f * scale;
+    style.WindowPadding = ImVec2(14.0f * scale, 10.0f * scale);
+    style.FramePadding = ImVec2(10.0f * scale, 6.0f * scale);
+    style.ItemSpacing = ImVec2(8.0f * scale, 6.0f * scale);
+    style.ItemInnerSpacing = ImVec2(6.0f * scale, 4.0f * scale);
+    style.CellPadding = ImVec2(6.0f * scale, 6.0f * scale);
+    style.WindowTitleAlign = ImVec2(0.0f, 0.5f);
+
+    if (dark)
+    {
+        g_clear_color = ColorFromBytes(20, 20, 22, 220);
+        g_accent = ColorFromBytes(0, 120, 212);
+        g_app_bg = ColorFromBytes(26, 26, 28, 200);
+        g_panel_bg = ColorFromBytes(33, 33, 35, 210);
+        g_card_bg = ColorFromBytes(40, 40, 43, 220);
+        g_nav_bg = ColorFromBytes(29, 29, 31, 200);
+        g_nav_hover = ColorFromBytes(45, 45, 48, 210);
+        g_nav_active = ColorFromBytes(52, 52, 56, 220);
+        g_separator = ColorFromBytes(70, 70, 74);
+    }
+    else
+    {
+        g_clear_color = ColorFromBytes(240, 240, 242, 200);
+        g_accent = ColorFromBytes(0, 120, 212);
+        g_app_bg = ColorFromBytes(244, 244, 246, 200);
+        g_panel_bg = ColorFromBytes(255, 255, 255, 210);
+        g_card_bg = ColorFromBytes(248, 248, 250, 220);
+        g_nav_bg = ColorFromBytes(246, 246, 248, 200);
+        g_nav_hover = ColorFromBytes(230, 230, 235, 210);
+        g_nav_active = ColorFromBytes(224, 224, 230, 220);
+        g_separator = ColorFromBytes(210, 210, 214);
+    }
+
+    style.Colors[ImGuiCol_Text] = dark ? ColorFromBytes(240, 240, 240) : ColorFromBytes(20, 20, 20);
+    style.Colors[ImGuiCol_TextDisabled] = dark ? ColorFromBytes(140, 140, 140) : ColorFromBytes(120, 120, 120);
+    style.Colors[ImGuiCol_WindowBg] = g_app_bg;
+    style.Colors[ImGuiCol_ChildBg] = g_panel_bg;
+    style.Colors[ImGuiCol_PopupBg] = g_panel_bg;
+    style.Colors[ImGuiCol_Border] = g_separator;
+    style.Colors[ImGuiCol_FrameBg] = dark ? ColorFromBytes(40, 40, 45) : ColorFromBytes(235, 235, 238);
+    style.Colors[ImGuiCol_FrameBgHovered] = dark ? ColorFromBytes(55, 55, 60) : ColorFromBytes(220, 220, 224);
+    style.Colors[ImGuiCol_FrameBgActive] = dark ? ColorFromBytes(64, 64, 70) : ColorFromBytes(210, 210, 216);
+    style.Colors[ImGuiCol_Button] = dark ? ColorFromBytes(45, 45, 50) : ColorFromBytes(232, 232, 236);
+    style.Colors[ImGuiCol_ButtonHovered] = dark ? ColorFromBytes(58, 58, 64) : ColorFromBytes(220, 220, 225);
+    style.Colors[ImGuiCol_ButtonActive] = dark ? ColorFromBytes(70, 70, 76) : ColorFromBytes(210, 210, 216);
+    style.Colors[ImGuiCol_CheckMark] = g_accent;
+    style.Colors[ImGuiCol_SliderGrab] = g_accent;
+    style.Colors[ImGuiCol_SliderGrabActive] = g_accent;
+    style.Colors[ImGuiCol_Separator] = g_separator;
+    style.Colors[ImGuiCol_SeparatorHovered] = g_separator;
+    style.Colors[ImGuiCol_SeparatorActive] = g_separator;
+    style.Colors[ImGuiCol_ResizeGrip] = g_accent;
+    style.Colors[ImGuiCol_ResizeGripHovered] = g_accent;
+    style.Colors[ImGuiCol_ResizeGripActive] = g_accent;
+    style.Colors[ImGuiCol_Header] = dark ? ColorFromBytes(45, 45, 50) : ColorFromBytes(230, 230, 234);
+    style.Colors[ImGuiCol_HeaderHovered] = dark ? ColorFromBytes(55, 55, 60) : ColorFromBytes(220, 220, 224);
+    style.Colors[ImGuiCol_HeaderActive] = dark ? ColorFromBytes(64, 64, 70) : ColorFromBytes(210, 210, 216);
+    style.Colors[ImGuiCol_ScrollbarBg] = g_panel_bg;
+    style.Colors[ImGuiCol_ScrollbarGrab] = dark ? ColorFromBytes(60, 60, 66) : ColorFromBytes(200, 200, 205);
+    style.Colors[ImGuiCol_ScrollbarGrabHovered] = dark ? ColorFromBytes(70, 70, 76) : ColorFromBytes(188, 188, 194);
+    style.Colors[ImGuiCol_ScrollbarGrabActive] = dark ? ColorFromBytes(80, 80, 86) : ColorFromBytes(176, 176, 184);
+    style.Colors[ImGuiCol_TitleBg] = g_panel_bg;
+    style.Colors[ImGuiCol_TitleBgActive] = g_panel_bg;
+    style.Colors[ImGuiCol_TitleBgCollapsed] = g_panel_bg;
+}
+
+static void SetDwmDarkMode(HWND hwnd, bool dark)
+{
+    if (!hwnd)
+        return;
+    const BOOL use_dark = dark ? TRUE : FALSE;
+    DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &use_dark, sizeof(use_dark));
+    DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE_BEFORE_20H1, &use_dark, sizeof(use_dark));
+}
+
+static void UpdateViewportEffects(bool dark)
+{
+    ImGuiPlatformIO& platform_io = ImGui::GetPlatformIO();
+    for (int i = 0; i < platform_io.Viewports.Size; ++i)
+    {
+        ImGuiViewport* vp = platform_io.Viewports[i];
+        HWND hwnd = (HWND)vp->PlatformHandle;
+        if (!hwnd || hwnd == g_host_hwnd)
+            continue;
+        SetDwmDarkMode(hwnd, dark);
+        bool styled = false;
+        for (size_t idx = 0; idx < g_styled_hwnds.size(); ++idx)
+        {
+            if (g_styled_hwnds[idx] == hwnd)
+            {
+                styled = true;
+                break;
+            }
+        }
+        if (!styled)
+        {
+            LONG_PTR style = GetWindowLongPtr(hwnd, GWL_STYLE);
+            LONG_PTR new_style = (style & ~WS_MAXIMIZEBOX) | WS_MINIMIZEBOX;
+            if (new_style != style)
+            {
+                SetWindowLongPtr(hwnd, GWL_STYLE, new_style);
+                SetWindowPos(hwnd, nullptr, 0, 0, 0, 0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
+            }
+            g_styled_hwnds.push_back(hwnd);
+        }
+    }
+}
+
+static void InitSharedMemory()
+{
+    if (g_shared_map)
+        return;
+    g_shared_map = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0,
+        (DWORD)sizeof(SharedData), kMapName);
+    if (!g_shared_map)
+        return;
+    g_shared = (SharedData*)MapViewOfFile(g_shared_map, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(SharedData));
+    if (!g_shared)
+    {
+        CloseHandle(g_shared_map);
+        g_shared_map = nullptr;
+        return;
+    }
+    g_shared->magic = kMagic;
+    g_shared->seq = 0;
+    g_shared->alive = 1;
+    g_shared->unlock_enabled = 0;
+    g_shared->target_fps = 0;
+    g_shared_last = *g_shared;
+}
+
+static void ShutdownSharedMemory()
+{
+    if (g_shared)
+    {
+        g_shared->alive = 0;
+        InterlockedIncrement(&g_shared->seq);
+        UnmapViewOfFile(g_shared);
+        g_shared = nullptr;
+    }
+    if (g_shared_map)
+    {
+        CloseHandle(g_shared_map);
+        g_shared_map = nullptr;
+    }
+}
+
+static void UpdateSharedMemoryFromConfig()
+{
+    if (!g_shared)
+        return;
+
+    const int32_t kMin = (std::numeric_limits<int32_t>::min)();
+    const int32_t kMax = (std::numeric_limits<int32_t>::max)();
+    if (g_config.inject_target_fps < kMin)
+        g_config.inject_target_fps = kMin;
+    if (g_config.inject_target_fps > kMax)
+        g_config.inject_target_fps = kMax;
+
+    LONG new_unlock = (g_config.inject_enabled && g_config.inject_unlock_fps) ? 1 : 0;
+    int32_t new_fps = (int32_t)g_config.inject_target_fps;
+
+    if (g_shared_last.unlock_enabled != new_unlock ||
+        g_shared_last.target_fps != new_fps)
+    {
+        g_shared->magic = kMagic;
+        g_shared->unlock_enabled = new_unlock;
+        g_shared->target_fps = new_fps;
+        InterlockedIncrement(&g_shared->seq);
+        g_shared_last = *g_shared;
+    }
+}
+
+static void OpenUrl(const char* url)
+{
+    if (!url || !*url)
+        return;
+    std::wstring wide = Utf8ToWide(url);
+    if (wide.empty())
+        return;
+    ShellExecuteW(nullptr, L"open", wide.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+}
+
+static void RenderLinkText(const char* label, const char* url, const ImVec4& normal, const ImVec4& hover)
+{
+    ImGui::TextColored(normal, "%s", label);
+    bool hovered = ImGui::IsItemHovered();
+    if (hovered)
+    {
+        ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+        ImGui::SetTooltip("%s", url);
+        ImVec2 underline_min = ImGui::GetItemRectMin();
+        ImVec2 underline_max = ImGui::GetItemRectMax();
+        underline_min.y += ImGui::GetTextLineHeight();
+        underline_max.y += 1.0f;
+        ImGui::GetWindowDrawList()->AddLine(
+            underline_min,
+            underline_max,
+            ImGui::ColorConvertFloat4ToU32(hover),
+            1.0f);
+        if (ImGui::IsMouseClicked(ImGuiMouseButton_Left))
+            OpenUrl(url);
+    }
+}
+
+static std::wstring BuildLaunchArguments(const LauncherConfig& config)
+{
+    std::wstring args;
+    if (config.use_launch_args)
+    {
+        if (config.use_popupwindow)
+            args += L" -popupwindow";
+        if (config.use_custom_args && !config.custom_args.empty())
+        {
+            args += L" ";
+            args += Utf8ToWide(config.custom_args);
+        }
+    }
+    return args;
+}
+
+static bool InjectDllLoadLibrary(HANDLE process, const std::wstring& dll_path, std::wstring* error)
+{
+    if (!process)
+    {
+        if (error)
+            *error = L"Invalid process handle.";
+        return false;
+    }
+    if (!FileExistsW(dll_path))
+    {
+        if (error)
+            *error = L"UnlockerIsland.dll not found.";
+        return false;
+    }
+
+    size_t bytes = (dll_path.size() + 1) * sizeof(wchar_t);
+    LPVOID remote_mem = VirtualAllocEx(process, nullptr, bytes, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    if (!remote_mem)
+    {
+        if (error)
+            *error = L"VirtualAllocEx failed.";
+        return false;
+    }
+
+    SIZE_T written = 0;
+    if (!WriteProcessMemory(process, remote_mem, dll_path.c_str(), bytes, &written) || written != bytes)
+    {
+        VirtualFreeEx(process, remote_mem, 0, MEM_RELEASE);
+        if (error)
+            *error = L"WriteProcessMemory failed.";
+        return false;
+    }
+
+    HMODULE kernel = GetModuleHandleW(L"kernel32.dll");
+    FARPROC load_library = kernel ? GetProcAddress(kernel, "LoadLibraryW") : nullptr;
+    if (!load_library)
+    {
+        VirtualFreeEx(process, remote_mem, 0, MEM_RELEASE);
+        if (error)
+            *error = L"LoadLibraryW not available.";
+        return false;
+    }
+
+    HANDLE thread = CreateRemoteThread(process, nullptr, 0,
+        reinterpret_cast<LPTHREAD_START_ROUTINE>(load_library), remote_mem, 0, nullptr);
+    if (!thread)
+    {
+        VirtualFreeEx(process, remote_mem, 0, MEM_RELEASE);
+        if (error)
+            *error = L"CreateRemoteThread failed.";
+        return false;
+    }
+
+    WaitForSingleObject(thread, 5000);
+    DWORD exit_code = 0;
+    GetExitCodeThread(thread, &exit_code);
+    CloseHandle(thread);
+    VirtualFreeEx(process, remote_mem, 0, MEM_RELEASE);
+    if (exit_code == 0)
+    {
+        if (error)
+            *error = L"LoadLibraryW failed in target process.";
+        return false;
+    }
+    return true;
+}
+
+static bool LaunchGameWithOptionalInjection(const LauncherConfig& config, std::wstring* error)
+{
+    if (!g_is_admin)
+    {
+        if (error)
+            *error = L"请以管理员权限运行启动器。";
+        return false;
+    }
+    if (config.game_path.empty() || !FileExistsW(config.game_path))
+    {
+        if (error)
+            *error = L"未找到游戏可执行文件。请选择游戏路径。";
+        return false;
+    }
+
+    std::wstring current_dir = GetDirectoryFromPath(config.game_path);
+    std::wstring args = BuildLaunchArguments(config);
+    std::wstring cmdline = L"\"" + config.game_path + L"\"" + args;
+    std::vector<wchar_t> cmd_buffer(cmdline.begin(), cmdline.end());
+    cmd_buffer.push_back(L'\0');
+
+    STARTUPINFOW si = {};
+    PROCESS_INFORMATION pi = {};
+    si.cb = sizeof(si);
+    DWORD create_flags = config.inject_enabled ? CREATE_SUSPENDED : 0;
+    BOOL ok = CreateProcessW(
+        nullptr,
+        cmd_buffer.data(),
+        nullptr,
+        nullptr,
+        FALSE,
+        create_flags,
+        nullptr,
+        current_dir.c_str(),
+        &si,
+        &pi);
+    if (!ok)
+    {
+        if (error)
+            *error = L"CreateProcess failed.";
+        return false;
+    }
+
+    bool result = true;
+    if (config.inject_enabled)
+    {
+        std::wstring dll_path = GetDefaultDllPath();
+        if (!InjectDllLoadLibrary(pi.hProcess, dll_path, error))
+        {
+            TerminateProcess(pi.hProcess, 1);
+            result = false;
+        }
+        else
+        {
+            ResumeThread(pi.hThread);
+        }
+    }
+
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    return result;
+}
+
+static void LimitFrameRate(double target_fps)
+{
+    if (target_fps <= 0.0)
+        return;
+    static LARGE_INTEGER freq = {};
+    static LARGE_INTEGER last = {};
+    if (freq.QuadPart == 0)
+    {
+        QueryPerformanceFrequency(&freq);
+        QueryPerformanceCounter(&last);
+        return;
+    }
+
+    LARGE_INTEGER now;
+    QueryPerformanceCounter(&now);
+    double elapsed_ms = (double)(now.QuadPart - last.QuadPart) * 1000.0 / (double)freq.QuadPart;
+    double target_ms = 1000.0 / target_fps;
+    if (elapsed_ms < target_ms)
+    {
+        DWORD sleep_ms = (DWORD)(target_ms - elapsed_ms);
+        if (sleep_ms > 1)
+            Sleep(sleep_ms - 1);
+        do
+        {
+            QueryPerformanceCounter(&now);
+            elapsed_ms = (double)(now.QuadPart - last.QuadPart) * 1000.0 / (double)freq.QuadPart;
+        } while (elapsed_ms < target_ms);
+    }
+    last = now;
+}
+
+static double DetermineTargetFps()
+{
+    HWND fg = ::GetForegroundWindow();
+    if (g_titlebar_hwnd && fg == g_titlebar_hwnd)
+        return 120.0;
+    if (g_hwnd && fg == g_hwnd)
+        return 120.0;
+    return 30.0;
+}
+
+static float LerpFloat(float a, float b, float t)
+{
+    return a + (b - a) * t;
+}
+
+static float SmoothStep(float t)
+{
+    if (t < 0.0f)
+        t = 0.0f;
+    if (t > 1.0f)
+        t = 1.0f;
+    return t * t * (3.0f - 2.0f * t);
+}
+
+static bool NavigationItem(const char* label, bool active, float width, float height, float scale, ImVec2* out_min, ImVec2* out_max)
+{
+    ImVec2 pos = ImGui::GetCursorScreenPos();
+    ImGui::InvisibleButton(label, ImVec2(width, height));
+    bool pressed = ImGui::IsItemClicked();
+    bool hovered = ImGui::IsItemHovered();
+    if (out_min)
+        *out_min = ImGui::GetItemRectMin();
+    if (out_max)
+        *out_max = ImGui::GetItemRectMax();
+    ImDrawList* draw = ImGui::GetWindowDrawList();
+    ImU32 bg = ImGui::ColorConvertFloat4ToU32(g_nav_bg);
+    if (active)
+        bg = ImGui::ColorConvertFloat4ToU32(g_nav_active);
+    else if (hovered)
+        bg = ImGui::ColorConvertFloat4ToU32(g_nav_hover);
+    draw->AddRectFilled(pos, ImVec2(pos.x + width, pos.y + height), bg, 6.0f * scale);
+
+    ImVec2 text_pos(pos.x + 14.0f * scale, pos.y + (height - ImGui::GetFontSize()) * 0.5f);
+    draw->AddText(text_pos, ImGui::ColorConvertFloat4ToU32(ImGui::GetStyle().Colors[ImGuiCol_Text]), label);
+    return pressed;
+}
+
+static bool PillButton(const char* label, bool active, const ImVec4& tint, const ImVec2& size = ImVec2(0, 0))
+{
+    ImVec4 base = tint;
+    if (!active)
+    {
+        base.x *= 0.6f;
+        base.y *= 0.6f;
+        base.z *= 0.6f;
+    }
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 999.0f);
+    ImGui::PushStyleColor(ImGuiCol_Button, base);
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(base.x + 0.05f, base.y + 0.05f, base.z + 0.05f, base.w));
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, base);
+    bool pressed = ImGui::Button(label, size);
+    ImGui::PopStyleColor(3);
+    ImGui::PopStyleVar();
+    return pressed;
+}
+
+static void RenderWinUI(float scale)
+{
+    static int active_page = 0;
+    static ImGuiID floating_viewport_id = 0;
+    static float tab_anim[3] = { 1.0f, 0.0f, 0.0f };
+    static float page_alpha[3] = { 1.0f, 0.0f, 0.0f };
+    static float indicator_y = 0.0f;
+    static float indicator_h = 0.0f;
+    static bool custom_args_inited = false;
+    static char custom_args_buf[512] = {};
+    static std::string launch_status = "就绪";
+
+    const ImVec2 window_size(1300.0f * scale, 800.0f * scale);
+    const ImVec2 window_pos(60.0f * scale, 40.0f * scale);
+    const float header_height = 44.0f * scale;
+    const float nav_width = 220.0f * scale;
+    const float content_pad = 18.0f * scale;
+    const float content_vpad = 14.0f * scale;
+    const float nav_content_gap = 16.0f * scale;
+    const float title_btn_w = 36.0f * scale;
+    const float title_btn_h = 28.0f * scale;
+    const float title_btn_gap = 6.0f * scale;
+    const float title_btn_pad = 8.0f * scale;
+
+    ImGuiWindowFlags window_flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoScrollbar |
+        ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoCollapse;
+
+    ImGui::SetNextWindowSizeConstraints(
+        ImVec2(g_min_window_w * scale, g_min_window_h * scale),
+        ImVec2(FLT_MAX, FLT_MAX));
+    ImGui::SetNextWindowSize(window_size, ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowPos(window_pos, ImGuiCond_FirstUseEver);
+    if (floating_viewport_id == 0)
+        floating_viewport_id = ImHashStr("MainFloatingViewport");
+    ImGui::SetNextWindowViewport(floating_viewport_id);
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, g_app_bg);
+    ImGui::Begin("EndField.Launcher", nullptr, window_flags);
+    ImGui::PopStyleColor();
+
+    if (g_font_main)
+        ImGui::PushFont(g_font_main, 0.0f);
+
+    HWND viewport_hwnd = (HWND)ImGui::GetWindowViewport()->PlatformHandle;
+    if (viewport_hwnd && viewport_hwnd != g_hwnd)
+    {
+        g_hwnd = viewport_hwnd;
+        SetDwmDarkMode(g_hwnd, g_dark_mode);
+    }
+
+    ImDrawList* draw = ImGui::GetWindowDrawList();
+    ImVec2 win_pos = ImGui::GetWindowPos();
+    ImVec2 win_size = ImGui::GetWindowSize();
+    draw->AddRectFilled(win_pos, ImVec2(win_pos.x + win_size.x, win_pos.y + header_height),
+        ImGui::ColorConvertFloat4ToU32(g_panel_bg), 8.0f * scale, ImDrawFlags_RoundCornersTop);
+    draw->AddLine(ImVec2(win_pos.x, win_pos.y + header_height),
+        ImVec2(win_pos.x + win_size.x, win_pos.y + header_height),
+        ImGui::ColorConvertFloat4ToU32(g_separator), 1.0f);
+    float sep_x = win_pos.x + content_pad + nav_width + (nav_content_gap * 0.5f);
+    draw->AddLine(ImVec2(sep_x, win_pos.y + header_height + content_vpad),
+        ImVec2(sep_x, win_pos.y + win_size.y - content_vpad),
+        ImGui::ColorConvertFloat4ToU32(g_separator), 1.0f);
+
+    ImGui::SetCursorScreenPos(ImVec2(win_pos.x + 16.0f * scale, win_pos.y + 10.0f * scale));
+    if (g_font_title)
+        ImGui::PushFont(g_font_title, 0.0f);
+    ImGui::TextUnformatted("EndField.Launcher");
+    if (g_font_title)
+        ImGui::PopFont();
+
+    g_titlebar_hwnd = viewport_hwnd;
+    g_titlebar.bar = { (LONG)win_pos.x, (LONG)win_pos.y, (LONG)(win_pos.x + win_size.x), (LONG)(win_pos.y + header_height) };
+    float btn_top = win_pos.y + (header_height - title_btn_h) * 0.5f;
+    float btn_right = win_pos.x + win_size.x - title_btn_pad;
+    float close_left = btn_right - title_btn_w;
+    float min_left = close_left - title_btn_gap - title_btn_w;
+    g_titlebar.btn_min = { (LONG)min_left, (LONG)btn_top, (LONG)(min_left + title_btn_w), (LONG)(btn_top + title_btn_h) };
+    g_titlebar.btn_close = { (LONG)close_left, (LONG)btn_top, (LONG)(close_left + title_btn_w), (LONG)(btn_top + title_btn_h) };
+
+    ImU32 btn_bg = ImGui::ColorConvertFloat4ToU32(g_panel_bg);
+    ImU32 btn_hover = ImGui::ColorConvertFloat4ToU32(g_nav_hover);
+    ImU32 btn_close_hover = ImGui::ColorConvertFloat4ToU32(ColorFromBytes(210, 70, 70));
+    ImU32 btn_text = ImGui::ColorConvertFloat4ToU32(ImGui::GetStyle().Colors[ImGuiCol_Text]);
+
+    ImGui::SetCursorScreenPos(ImVec2((float)g_titlebar.btn_min.left, (float)g_titlebar.btn_min.top));
+    ImGui::PushID("title_min");
+    ImGui::InvisibleButton("##min", ImVec2(title_btn_w, title_btn_h));
+    bool min_hover = ImGui::IsItemHovered();
+    if (ImGui::IsItemClicked() && viewport_hwnd)
+        ::ShowWindow(viewport_hwnd, SW_MINIMIZE);
+    draw->AddRectFilled(ImVec2((float)g_titlebar.btn_min.left, (float)g_titlebar.btn_min.top),
+        ImVec2((float)g_titlebar.btn_min.right, (float)g_titlebar.btn_min.bottom), min_hover ? btn_hover : btn_bg, 6.0f * scale);
+    float min_y = (float)g_titlebar.btn_min.bottom - 8.0f * scale;
+    draw->AddLine(ImVec2((float)g_titlebar.btn_min.left + 10.0f * scale, min_y),
+        ImVec2((float)g_titlebar.btn_min.right - 10.0f * scale, min_y), btn_text, 1.6f * scale);
+    ImGui::PopID();
+
+    ImGui::SetCursorScreenPos(ImVec2((float)g_titlebar.btn_close.left, (float)g_titlebar.btn_close.top));
+    ImGui::PushID("title_close");
+    ImGui::InvisibleButton("##close", ImVec2(title_btn_w, title_btn_h));
+    bool close_hover = ImGui::IsItemHovered();
+    if (ImGui::IsItemClicked())
+        ::PostQuitMessage(0);
+    draw->AddRectFilled(ImVec2((float)g_titlebar.btn_close.left, (float)g_titlebar.btn_close.top),
+        ImVec2((float)g_titlebar.btn_close.right, (float)g_titlebar.btn_close.bottom), close_hover ? btn_close_hover : btn_bg, 6.0f * scale);
+    draw->AddLine(ImVec2((float)g_titlebar.btn_close.left + 12.0f * scale, (float)g_titlebar.btn_close.top + 8.0f * scale),
+        ImVec2((float)g_titlebar.btn_close.right - 12.0f * scale, (float)g_titlebar.btn_close.bottom - 8.0f * scale), btn_text, 1.5f * scale);
+    draw->AddLine(ImVec2((float)g_titlebar.btn_close.right - 12.0f * scale, (float)g_titlebar.btn_close.top + 8.0f * scale),
+        ImVec2((float)g_titlebar.btn_close.left + 12.0f * scale, (float)g_titlebar.btn_close.bottom - 8.0f * scale), btn_text, 1.5f * scale);
+    ImGui::PopID();
+
+    ImGui::SetCursorScreenPos(ImVec2(win_pos.x, win_pos.y + header_height));
+    ImGui::BeginChild("##body", ImVec2(win_size.x, win_size.y - header_height), false, ImGuiWindowFlags_NoScrollbar);
+    ImGui::SetCursorPos(ImVec2(content_pad, content_vpad));
+    ImVec2 body_avail = ImGui::GetContentRegionAvail();
+    ImVec2 nav_size(nav_width, body_avail.y - content_vpad);
+    ImVec2 content_size(body_avail.x - nav_width - nav_content_gap - content_pad, body_avail.y - content_vpad);
+
+    ImGui::BeginChild("##nav", nav_size, false, ImGuiWindowFlags_NoScrollbar);
+    ImDrawList* nav_draw = ImGui::GetWindowDrawList();
+    ImVec2 nav_pos = ImGui::GetWindowPos();
+    ImVec2 nav_window_size = ImGui::GetWindowSize();
+    nav_draw->AddRectFilled(nav_pos, ImVec2(nav_pos.x + nav_window_size.x, nav_pos.y + nav_window_size.y),
+        ImGui::ColorConvertFloat4ToU32(g_nav_bg), 0.0f);
+    ImGui::Dummy(ImVec2(0.0f, 8.0f * scale));
+    ImGuiIO& io = ImGui::GetIO();
+    float anim_speed = 16.0f * io.DeltaTime;
+    for (int i = 0; i < 3; ++i)
+    {
+        float target = (active_page == i) ? 1.0f : 0.0f;
+        tab_anim[i] = LerpFloat(tab_anim[i], target, anim_speed);
+        page_alpha[i] = LerpFloat(page_alpha[i], target, anim_speed * 1.4f);
+    }
+
+    ImVec2 tab_min[3] = {};
+    ImVec2 tab_max[3] = {};
+
+    if (NavigationItem("启动游戏", active_page == 0, nav_width - 16.0f * scale, 40.0f * scale, scale, &tab_min[0], &tab_max[0]))
+        active_page = 0;
+    ImGui::Dummy(ImVec2(0.0f, 6.0f * scale));
+    if (NavigationItem("窗口设置", active_page == 1, nav_width - 16.0f * scale, 40.0f * scale, scale, &tab_min[1], &tab_max[1]))
+        active_page = 1;
+    ImGui::Dummy(ImVec2(0.0f, 6.0f * scale));
+    if (NavigationItem("关于", active_page == 2, nav_width - 16.0f * scale, 40.0f * scale, scale, &tab_min[2], &tab_max[2]))
+        active_page = 2;
+
+    if (tab_max[active_page].y > tab_min[active_page].y)
+    {
+        float target_y = tab_min[active_page].y;
+        float target_h = tab_max[active_page].y - tab_min[active_page].y;
+        indicator_y = LerpFloat(indicator_y, target_y, anim_speed);
+        indicator_h = LerpFloat(indicator_h, target_h, anim_speed);
+    }
+    ImVec2 indicator_pos(tab_min[active_page].x, indicator_y);
+    ImVec2 indicator_end(tab_min[active_page].x + 4.0f * scale, indicator_y + indicator_h);
+    ImVec4 accent = g_accent;
+    accent.w = 0.9f;
+    nav_draw->AddRectFilled(indicator_pos, indicator_end, ImGui::ColorConvertFloat4ToU32(accent), 6.0f * scale);
+    ImGui::EndChild();
+
+    ImGui::SameLine(0.0f, nav_content_gap);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(content_pad, content_vpad));
+    ImGui::BeginChild("##content", content_size, false, ImGuiWindowFlags_NoScrollbar);
+    ImDrawList* content_draw = ImGui::GetWindowDrawList();
+    ImVec2 content_pos = ImGui::GetWindowPos();
+    ImVec2 content_window_size = ImGui::GetWindowSize();
+    content_draw->AddRectFilled(content_pos, ImVec2(content_pos.x + content_window_size.x, content_pos.y + content_window_size.y),
+        ImGui::ColorConvertFloat4ToU32(g_panel_bg), 0.0f);
+
+    ImGui::Dummy(ImVec2(0.0f, 6.0f * scale));
+    if (g_font_title)
+        ImGui::PushFont(g_font_title, 0.0f);
+    const char* page_title = active_page == 0 ? "启动游戏" : (active_page == 1 ? "窗口设置" : "关于");
+    const char* page_subtitle = active_page == 0 ? "启动与注入" : (active_page == 1 ? "外观与偏好" : "说明");
+    ImGui::TextColored(g_accent, "%s", page_title);
+    ImGui::SameLine();
+    ImGui::TextDisabled("%s", page_subtitle);
+    if (g_font_title)
+        ImGui::PopFont();
+
+    ImGui::Dummy(ImVec2(0.0f, 8.0f * scale));
+
+    float ease = SmoothStep(page_alpha[active_page]);
+    ImGui::PushStyleVar(ImGuiStyleVar_Alpha, LerpFloat(0.4f, 1.0f, ease));
+    if (active_page == 0)
+    {
+        if (!custom_args_inited)
+        {
+            strncpy_s(custom_args_buf, sizeof(custom_args_buf), g_config.custom_args.c_str(), _TRUNCATE);
+            custom_args_inited = true;
+        }
+
+        std::string game_path_utf8 = WideToUtf8(g_config.game_path);
+        bool game_valid = !g_config.game_path.empty() && FileExistsW(g_config.game_path);
+
+        ImGui::PushStyleColor(ImGuiCol_ChildBg, g_card_bg);
+        ImGui::BeginChild("##game_path", ImVec2(0.0f, 0.0f), ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY, ImGuiWindowFlags_NoScrollbar);
+        ImGui::TextUnformatted("游戏路径");
+        ImGui::PushTextWrapPos(0.0f);
+        ImGui::TextUnformatted(game_path_utf8.empty() ? "未设置" : game_path_utf8.c_str());
+        ImGui::PopTextWrapPos();
+        if (!g_is_admin)
+        {
+            ImGui::TextColored(ImVec4(0.98f, 0.45f, 0.45f, 1.0f),
+                "游戏文件管理/切换游戏服务器/注入功能需要管理员权限，目前无法获取权限，相关功能已禁用。");
+        }
+        if (!game_valid)
+            ImGui::TextColored(ImVec4(0.98f, 0.55f, 0.55f, 1.0f), "未找到游戏，请选择路径。");
+        if (ImGui::Button("选择游戏位置"))
+        {
+            std::wstring selected = SelectGameExecutable(viewport_hwnd);
+            if (!selected.empty())
+            {
+                g_config.game_path = selected;
+                SaveConfig(g_config);
+            }
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("自动获取游戏路径"))
+        {
+            std::wstring detected;
+            DWORD pid = 0;
+            if (FindRunningGamePath(&detected, &pid))
+            {
+                g_config.game_path = detected;
+                SaveConfig(g_config);
+                if (pid != 0)
+                {
+                    HANDLE process = OpenProcess(PROCESS_TERMINATE, FALSE, pid);
+                    if (process)
+                    {
+                        TerminateProcess(process, 0);
+                        CloseHandle(process);
+                    }
+                }
+                MessageBoxW(viewport_hwnd, L"获取成功，已自动关闭游戏，请使用本启动器的启动游戏功能。", L"提示", MB_OK | MB_ICONINFORMATION);
+            }
+            else
+            {
+                MessageBoxW(viewport_hwnd, L"未检测到正在运行的游戏进程，请先启动游戏后再点击获取。", L"提示", MB_OK | MB_ICONWARNING);
+            }
+        }
+        ImGui::EndChild();
+
+        ImGui::Dummy(ImVec2(0.0f, 10.0f * scale));
+        ImGui::BeginChild("##inject", ImVec2(0.0f, 0.0f), ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY, ImGuiWindowFlags_NoScrollbar);
+        ImGui::TextUnformatted("注入");
+        ImGui::Separator();
+        ImGui::TextColored(ImVec4(0.98f, 0.45f, 0.45f, 1.0f), "注入功能非常危险且有可能会造成严重后果，请谨慎使用。");
+        if (!g_is_admin)
+            ImGui::TextColored(ImVec4(0.98f, 0.45f, 0.45f, 1.0f), "未以管理员权限运行，注入功能已禁用。");
+
+        ImGui::BeginDisabled(!g_is_admin);
+        if (ImGui::Checkbox("启用注入功能 (将模块注入游戏，以便实现一些高级但危险的功能)", &g_config.inject_enabled))
+            SaveConfig(g_config);
+        ImGui::BeginDisabled(!g_config.inject_enabled);
+        if (ImGui::Checkbox("开启解帧", &g_config.inject_unlock_fps))
+            SaveConfig(g_config);
+        ImGui::BeginDisabled(!g_config.inject_unlock_fps);
+        ImGui::InputInt("目标帧数", &g_config.inject_target_fps);
+        ImGui::TextUnformatted("快捷帧数");
+        const int quick_fps[] = { 30, 45, 60, 120, 144, 165, 200, 240, (std::numeric_limits<int32_t>::max)() };
+        for (int i = 0; i < (int)(sizeof(quick_fps) / sizeof(quick_fps[0])); ++i)
+        {
+            const int value = quick_fps[i];
+            const char* label = (value == (std::numeric_limits<int32_t>::max)()) ? "21亿(不限制)" : nullptr;
+            char buf[32] = {};
+            if (!label)
+            {
+                snprintf(buf, sizeof(buf), "%d", value);
+                label = buf;
+            }
+            if (PillButton(label, g_config.inject_target_fps == value, g_accent))
+            {
+                g_config.inject_target_fps = value;
+                SaveConfig(g_config);
+            }
+            if (i != (int)(sizeof(quick_fps) / sizeof(quick_fps[0])) - 1)
+                ImGui::SameLine();
+        }
+        const int32_t kMin = (std::numeric_limits<int32_t>::min)();
+        const int32_t kMax = (std::numeric_limits<int32_t>::max)();
+        if (g_config.inject_target_fps < kMin)
+            g_config.inject_target_fps = kMin;
+        if (g_config.inject_target_fps > kMax)
+            g_config.inject_target_fps = kMax;
+        if (ImGui::IsItemDeactivatedAfterEdit())
+            SaveConfig(g_config);
+        ImGui::EndDisabled();
+        ImGui::EndDisabled();
+        ImGui::EndDisabled();
+        ImGui::EndChild();
+
+        ImGui::Dummy(ImVec2(0.0f, 10.0f * scale));
+        ImGui::BeginChild("##launch_args", ImVec2(0.0f, 0.0f), ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY, ImGuiWindowFlags_NoScrollbar);
+        ImGui::TextUnformatted("启动参数");
+        ImGui::Separator();
+        if (ImGui::Checkbox("使用启动参数", &g_config.use_launch_args))
+            SaveConfig(g_config);
+
+        ImGui::BeginDisabled(!g_config.use_launch_args);
+        if (ImGui::Checkbox("使用 -popupwindow", &g_config.use_popupwindow))
+            SaveConfig(g_config);
+        if (ImGui::Checkbox("自定义启动参数", &g_config.use_custom_args))
+            SaveConfig(g_config);
+        if (g_config.use_custom_args)
+        {
+            ImGui::InputText("参数", custom_args_buf, sizeof(custom_args_buf));
+            if (ImGui::IsItemDeactivatedAfterEdit())
+            {
+                g_config.custom_args = custom_args_buf;
+                SaveConfig(g_config);
+            }
+        }
+        ImGui::EndDisabled();
+        ImGui::EndChild();
+
+        ImGui::Dummy(ImVec2(0.0f, 10.0f * scale));
+        bool can_launch = game_valid && g_is_admin;
+        if (!can_launch)
+            ImGui::BeginDisabled();
+        if (ImGui::Button("启动游戏", ImVec2(140.0f * scale, 0.0f)))
+        {
+            std::wstring error;
+            if (LaunchGameWithOptionalInjection(g_config, &error))
+                launch_status = "已启动";
+            else
+                launch_status = WideToUtf8(error);
+        }
+        if (!can_launch)
+            ImGui::EndDisabled();
+        ImGui::SameLine();
+        ImGui::Text("状态: %s", launch_status.c_str());
+        ImGui::PopStyleColor();
+    }
+    else if (active_page == 1)
+    {
+        ImGui::PushStyleColor(ImGuiCol_ChildBg, g_card_bg);
+        ImGui::BeginChild("##appearance", ImVec2(0.0f, 220.0f * scale), true, ImGuiWindowFlags_NoScrollbar);
+        ImGui::TextUnformatted("外观");
+        ImGui::Separator();
+        const char* theme_items = "跟随系统\0深色\0浅色\0";
+        if (ImGui::Combo("主题模式", &g_theme_mode, theme_items))
+        {
+            g_need_theme_refresh = true;
+            g_config.theme_mode = g_theme_mode;
+            SaveConfig(g_config);
+        }
+        ImGui::TextDisabled("跟随Windows系统设置修改界面颜色。");
+        ImGui::EndChild();
+        ImGui::PopStyleColor();
+    }
+    else
+    {
+        ImGui::PushStyleColor(ImGuiCol_ChildBg, g_card_bg);
+        ImGui::BeginChild("##about", ImVec2(0.0f, 220.0f * scale), true, ImGuiWindowFlags_NoScrollbar);
+        ImGui::TextUnformatted("关于");
+        ImGui::Separator();
+        ImGui::TextUnformatted("本项目开源地址：");
+        ImGui::SameLine();
+        RenderLinkText("GitHub", "https://github.com/isxlan0/EndField.Fps.UnlockerIsland", ImVec4(0.55f, 0.75f, 1.0f, 1.0f), ImVec4(0.65f, 0.85f, 1.0f, 1.0f));
+        ImGui::Dummy(ImVec2(0.0f, 6.0f * scale));
+        ImGui::TextColored(ImVec4(0.98f, 0.45f, 0.45f, 1.0f), "免责声明：本工具仅供学习与测试使用。");
+        ImGui::TextColored(ImVec4(0.98f, 0.45f, 0.45f, 1.0f), "使用注入功能可能违反相关条款或造成数据损坏等后果，");
+        ImGui::TextColored(ImVec4(0.98f, 0.45f, 0.45f, 1.0f), "请自行承担所有风险与责任。");
+        ImGui::Dummy(ImVec2(0.0f, 6.0f * scale));
+        ImGui::Text("构建时间: %s %s", __DATE__, __TIME__);
+        ImGui::EndChild();
+        ImGui::PopStyleColor();
+    }
+
+    ImGui::PopStyleVar();
+    ImGui::EndChild();
+    ImGui::PopStyleVar();
+    ImGui::EndChild();
+
+    UpdateSharedMemoryFromConfig();
+
+    if (g_font_main)
+        ImGui::PopFont();
+
+    ImGui::End();
+}
+
+
+bool CreateDeviceD3D(HWND hWnd);
+void CleanupDeviceD3D();
+void CreateRenderTarget();
+void CleanupRenderTarget();
+LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
+
+
+int main(int, char**)
+{
+#ifdef NDEBUG
+    HWND console = GetConsoleWindow();
+    if (console)
+        ShowWindow(console, SW_HIDE);
+    FreeConsole();
+#endif
+    
+    ImGui_ImplWin32_EnableDpiAwareness();
+    float main_scale = ImGui_ImplWin32_GetDpiScaleForMonitor(::MonitorFromPoint(POINT{ 0, 0 }, MONITOR_DEFAULTTOPRIMARY));
+
+    LoadConfig(&g_config);
+    g_theme_mode = g_config.theme_mode;
+    if (!g_config.disclaimer_accepted)
+    {
+        int res = MessageBoxW(nullptr,
+            L"免责声明：本工具为第三方非官方程序，使用可能违反游戏条款并导致封号等后果，作者不承担任何责任。\n"
+            L"如有侵权请联系删除。\n\n"
+            L"是否继续？",
+            L"免责声明", MB_OKCANCEL | MB_ICONWARNING);
+        if (res != IDOK)
+            return 0;
+        g_config.disclaimer_accepted = true;
+        SaveConfig(g_config);
+    }
+    g_is_admin = IsRunningAsAdmin();
+    InitSharedMemory();
+
+    
+    WNDCLASSEXW wc = { sizeof(wc), CS_CLASSDC, WndProc, 0L, 0L, GetModuleHandle(nullptr), nullptr, nullptr, nullptr, nullptr, L"ImGui Example", nullptr };
+    ::RegisterClassExW(&wc);
+    HWND hwnd_hidden = ::CreateWindowExW(0, wc.lpszClassName, L"ImGui Host",
+        WS_POPUP, 0, 0, 1, 1, nullptr, nullptr, wc.hInstance, nullptr);
+    g_host_hwnd = hwnd_hidden;
+    ::ShowWindow(hwnd_hidden, SW_HIDE);
+
+    HWND hwnd = hwnd_hidden;
+    g_hwnd = nullptr;
+
+    
+    if (!CreateDeviceD3D(hwnd))
+    {
+        CleanupDeviceD3D();
+        ::UnregisterClassW(wc.lpszClassName, wc.hInstance);
+        return 1;
+    }
+
+    
+    g_dark_mode = ReadSystemDarkMode();
+    if (g_theme_mode == 1)
+        g_dark_mode = true;
+    else if (g_theme_mode == 2)
+        g_dark_mode = false;
+
+    
+    IMGUI_CHECKVERSION();
+    ImGui::CreateContext();
+    ImGuiIO& io = ImGui::GetIO(); (void)io;
+    io.IniFilename = nullptr;
+    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;     
+    io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;      
+    io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+    io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
+    io.ConfigViewportsNoDecoration = true;
+
+    
+    ImGuiStyle& style = ImGui::GetStyle();
+    const float ui_scale = 1.0f;
+    style.ScaleAllSizes(ui_scale);
+    style.FontScaleDpi = ui_scale;
+    io.ConfigDpiScaleFonts = false;
+    io.ConfigDpiScaleViewports = false;
+    ApplyTheme(g_dark_mode, ui_scale);
+
+    
+    if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable)
+    {
+        style.Colors[ImGuiCol_WindowBg].w = 1.0f;
+    }
+
+    
+    ImGui_ImplWin32_Init(hwnd);
+    ImGui_ImplDX11_Init(g_pd3dDevice, g_pd3dDeviceContext);
+
+    
+    
+    
+    
+    
+    
+    
+    
+    ImFontConfig Font_cfg;
+    Font_cfg.OversampleH = 2;
+    Font_cfg.OversampleV = 2;
+    Font_cfg.PixelSnapH = true;
+    Font_cfg.FontDataOwnedByAtlas = true;
+
+    ImFont* Font = io.Fonts->AddFontFromFileTTF("C:\\Windows\\Fonts\\msyh.ttc", 18.0f, &Font_cfg, io.Fonts->GetGlyphRangesChineseFull());
+    ImFont* Font_Big = io.Fonts->AddFontFromFileTTF("C:\\Windows\\Fonts\\msyh.ttc", 22.0f, &Font_cfg, io.Fonts->GetGlyphRangesChineseFull());
+    if (!Font || !Font_Big)
+    {
+        Font = io.Fonts->AddFontDefault();
+        Font_Big = Font;
+    }
+    g_font_main = Font;
+    g_font_title = Font_Big;
+
+    
+    bool done = false;
+    while (!done)
+    {
+        
+        
+        MSG msg;
+        while (::PeekMessage(&msg, nullptr, 0U, 0U, PM_REMOVE))
+        {
+            ::TranslateMessage(&msg);
+            ::DispatchMessage(&msg);
+            if (msg.message == WM_QUIT)
+                done = true;
+        }
+        if (done)
+            break;
+
+        
+        if (g_SwapChainOccluded && g_pSwapChain->Present(0, DXGI_PRESENT_TEST) == DXGI_STATUS_OCCLUDED)
+        {
+            ::Sleep(10);
+            continue;
+        }
+        g_SwapChainOccluded = false;
+
+        
+        if (g_ResizeWidth != 0 && g_ResizeHeight != 0)
+        {
+            CleanupRenderTarget();
+            g_pSwapChain->ResizeBuffers(0, g_ResizeWidth, g_ResizeHeight, DXGI_FORMAT_UNKNOWN, 0);
+            g_ResizeWidth = g_ResizeHeight = 0;
+            CreateRenderTarget();
+        }
+
+        
+        ImGui_ImplDX11_NewFrame();
+        ImGui_ImplWin32_NewFrame();
+        ImGui::NewFrame();
+
+        if (g_theme_mode == 0)
+        {
+            ULONGLONG now = GetTickCount64();
+            if (g_need_theme_refresh || (now - g_last_theme_check) > 1000)
+            {
+                bool system_dark = ReadSystemDarkMode();
+                if (system_dark != g_dark_mode)
+                {
+                    g_dark_mode = system_dark;
+                    ApplyTheme(g_dark_mode, ui_scale);
+                }
+                g_need_theme_refresh = false;
+                g_last_theme_check = now;
+            }
+        }
+        else
+        {
+            bool desired_dark = (g_theme_mode == 1);
+            if (g_need_theme_refresh || desired_dark != g_dark_mode)
+            {
+                g_dark_mode = desired_dark;
+                ApplyTheme(g_dark_mode, ui_scale);
+                g_need_theme_refresh = false;
+            }
+        }
+
+        RenderWinUI(ui_scale);
+
+        
+        ImGui::Render();
+        const float clear_color_with_alpha[4] = { g_clear_color.x * g_clear_color.w, g_clear_color.y * g_clear_color.w, g_clear_color.z * g_clear_color.w, g_clear_color.w };
+        g_pd3dDeviceContext->OMSetRenderTargets(1, &g_mainRenderTargetView, nullptr);
+        g_pd3dDeviceContext->ClearRenderTargetView(g_mainRenderTargetView, clear_color_with_alpha);
+        ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
+
+        
+        if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable)
+        {
+            ImGui::UpdatePlatformWindows();
+            UpdateViewportEffects(g_dark_mode);
+            ImGui::RenderPlatformWindowsDefault();
+        }
+
+        
+        HRESULT hr = g_pSwapChain->Present(g_in_sizemove ? 0 : 1, 0);
+        g_SwapChainOccluded = (hr == DXGI_STATUS_OCCLUDED);
+
+        if (!g_in_sizemove)
+            LimitFrameRate(DetermineTargetFps());
+    }
+
+    
+    ImGui_ImplDX11_Shutdown();
+    ImGui_ImplWin32_Shutdown();
+    ImGui::DestroyContext();
+
+    CleanupDeviceD3D();
+    ::DestroyWindow(hwnd);
+    ::UnregisterClassW(wc.lpszClassName, wc.hInstance);
+    ShutdownSharedMemory();
+
+    return 0;
+}
+
+
+bool CreateDeviceD3D(HWND hWnd)
+{
+    
+    
+    DXGI_SWAP_CHAIN_DESC sd;
+    ZeroMemory(&sd, sizeof(sd));
+    sd.BufferCount = 2;
+    sd.BufferDesc.Width = 0;
+    sd.BufferDesc.Height = 0;
+    sd.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    sd.BufferDesc.RefreshRate.Numerator = 0;
+    sd.BufferDesc.RefreshRate.Denominator = 0;
+    sd.Flags = 0;
+    sd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+    sd.OutputWindow = hWnd;
+    sd.SampleDesc.Count = 1;
+    sd.SampleDesc.Quality = 0;
+    sd.Windowed = TRUE;
+    sd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+
+    UINT createDeviceFlags = 0;
+    
+    D3D_FEATURE_LEVEL featureLevel;
+    const D3D_FEATURE_LEVEL featureLevelArray[2] = { D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_10_0, };
+    HRESULT res = D3D11CreateDeviceAndSwapChain(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, createDeviceFlags, featureLevelArray, 2, D3D11_SDK_VERSION, &sd, &g_pSwapChain, &g_pd3dDevice, &featureLevel, &g_pd3dDeviceContext);
+    if (res == DXGI_ERROR_UNSUPPORTED) 
+        res = D3D11CreateDeviceAndSwapChain(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, createDeviceFlags, featureLevelArray, 2, D3D11_SDK_VERSION, &sd, &g_pSwapChain, &g_pd3dDevice, &featureLevel, &g_pd3dDeviceContext);
+    if (res != S_OK)
+        return false;
+
+    
+    
+    
+    IDXGIFactory* pSwapChainFactory;
+    if (SUCCEEDED(g_pSwapChain->GetParent(IID_PPV_ARGS(&pSwapChainFactory))))
+    {
+        pSwapChainFactory->MakeWindowAssociation(hWnd, DXGI_MWA_NO_ALT_ENTER);
+        pSwapChainFactory->Release();
+    }
+
+    CreateRenderTarget();
+    return true;
+}
+
+void CleanupDeviceD3D()
+{
+    CleanupRenderTarget();
+    if (g_pSwapChain) { g_pSwapChain->Release(); g_pSwapChain = nullptr; }
+    if (g_pd3dDeviceContext) { g_pd3dDeviceContext->Release(); g_pd3dDeviceContext = nullptr; }
+    if (g_pd3dDevice) { g_pd3dDevice->Release(); g_pd3dDevice = nullptr; }
+}
+
+void CreateRenderTarget()
+{
+    ID3D11Texture2D* pBackBuffer;
+    g_pSwapChain->GetBuffer(0, IID_PPV_ARGS(&pBackBuffer));
+    g_pd3dDevice->CreateRenderTargetView(pBackBuffer, nullptr, &g_mainRenderTargetView);
+    pBackBuffer->Release();
+}
+
+void CleanupRenderTarget()
+{
+    if (g_mainRenderTargetView) { g_mainRenderTargetView->Release(); g_mainRenderTargetView = nullptr; }
+}
+
+
+extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
+
+
+
+
+
+
+LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
+{
+    if (ImGui_ImplWin32_WndProcHandler(hWnd, msg, wParam, lParam))
+        return true;
+
+    switch (msg)
+    {
+    case WM_NCHITTEST:
+    {
+        if (hWnd != g_titlebar_hwnd)
+            break;
+        LRESULT hit = ::DefWindowProcW(hWnd, msg, wParam, lParam);
+        if (hit != HTCLIENT)
+            return hit;
+        POINT pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+        if (PtInRect(&g_titlebar.btn_min, pt) || PtInRect(&g_titlebar.btn_close, pt))
+            return HTCLIENT;
+        if (PtInRect(&g_titlebar.bar, pt))
+            return HTCAPTION;
+        return hit;
+    }
+    case WM_SIZE:
+        if (wParam == SIZE_MINIMIZED)
+            return 0;
+        g_ResizeWidth = (UINT)LOWORD(lParam); 
+        g_ResizeHeight = (UINT)HIWORD(lParam);
+        return 0;
+    case WM_ENTERSIZEMOVE:
+        g_in_sizemove = true;
+        return 0;
+    case WM_SIZING:
+    {
+        RECT* rect = reinterpret_cast<RECT*>(lParam);
+        if (rect)
+        {
+            g_in_sizemove = true;
+            RECT client_rect;
+            if (::GetClientRect(hWnd, &client_rect))
+            {
+                UINT w = (UINT)(client_rect.right - client_rect.left);
+                UINT h = (UINT)(client_rect.bottom - client_rect.top);
+                if (w > 0 && h > 0 && g_pSwapChain)
+                {
+                    CleanupRenderTarget();
+                    g_pSwapChain->ResizeBuffers(0, w, h, DXGI_FORMAT_UNKNOWN, 0);
+                    CreateRenderTarget();
+                    g_ResizeWidth = g_ResizeHeight = 0;
+                }
+            }
+        }
+        return 0;
+    }
+    case WM_EXITSIZEMOVE:
+    {
+        g_in_sizemove = false;
+        RECT rect;
+        if (::GetClientRect(hWnd, &rect))
+        {
+            g_ResizeWidth = (UINT)(rect.right - rect.left);
+            g_ResizeHeight = (UINT)(rect.bottom - rect.top);
+        }
+        return 0;
+    }
+    case WM_SYSCOMMAND:
+        if ((wParam & 0xfff0) == SC_KEYMENU) 
+            return 0;
+        break;
+    case WM_SETTINGCHANGE:
+        g_need_theme_refresh = true;
+        break;
+    case WM_ERASEBKGND:
+        return 1;
+    case WM_DESTROY:
+        ::PostQuitMessage(0);
+        return 0;
+    }
+    return ::DefWindowProcW(hWnd, msg, wParam, lParam);
+}

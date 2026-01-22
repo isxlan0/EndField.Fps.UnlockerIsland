@@ -1,0 +1,12 @@
+<Solution>
+  <Configurations>
+    <Platform Name="x64" />
+    <Platform Name="x86" />
+  </Configurations>
+  <Project Path="EndField.Launcher/EndField.Launcher.vcxproj" Id="0fe4dc49-c885-46ce-8965-d3f3dbf90520">
+    <BuildType Solution="Debug|x64" Project="Release" />
+  </Project>
+  <Project Path="UnlockerIsland/UnlockerIsland.vcxproj" Id="498e7e67-55db-4100-a35f-207746de1f04">
+    <BuildType Solution="Debug|x64" Project="Release" />
+  </Project>
+</Solution>
