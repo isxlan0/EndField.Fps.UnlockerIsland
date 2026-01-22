@@ -105,6 +105,8 @@ static HANDLE g_shared_map = nullptr;
 static SharedData* g_shared = nullptr;
 static SharedData g_shared_last = {};
 static bool g_is_admin = false;
+static DWORD g_game_process_id = 0;
+static ULONGLONG g_last_process_check = 0;
 
 static std::wstring Utf8ToWide(const std::string& text);
 static void SaveConfig(const LauncherConfig& config);
@@ -133,6 +135,9 @@ enum class TextKey
     ErrorCreateProcessFailed,
     LaunchStatusReady,
     LaunchStatusStarted,
+    GameStatusRunning,
+    GameStatusNotRunning,
+    CloseGame,
     NavLaunch,
     NavWindow,
     NavAbout,
@@ -236,7 +241,10 @@ static const TextEntry kTextTable[] =
     { "CreateProcess 失败。", "CreateProcess 失敗。", "CreateProcess failed." },
     { "就绪", "就緒", "Ready" },
     { "已启动", "已啟動", "Started" },
-    { "启动游戏", "啟動遊戲", "Launch" },
+    { "游戏已启动", "遊戲已啟動", "Game is running" },
+    { "游戏未启动", "遊戲未啟動", "Game is not running" },
+    { "关闭游戏", "關閉遊戲", "Close Game" },
+    { "启动游戏", "啟動遊戲", "Launch Game" },
     { "窗口设置", "視窗設定", "Settings" },
     { "关于", "關於", "About" },
     { "启动游戏", "啟動遊戲", "Launch" },
@@ -260,7 +268,7 @@ static const TextEntry kTextTable[] =
     { "开启解帧", "啟用解幀", "Unlock FPS" },
     { "目标帧数", "目標幀數", "Target FPS" },
     { "快捷帧数", "快速幀數", "Quick FPS" },
-    { "21亿(不限制)", "21 億（不限制）", "2.1B (Unlimited)" },
+    { "不限制", "不限制", "Unlimited" },
     { "启动参数", "啟動參數", "Launch Arguments" },
     { "使用启动参数", "使用啟動參數", "Use launch arguments" },
     { "使用 -popupwindow (无边框窗口化)", "使用 -popupwindow (無邊框視窗化)", "Use -popupwindow (Borderless windowing)" },
@@ -706,6 +714,70 @@ static bool FindRunningGamePath(std::wstring* out_path, DWORD* out_pid)
             *out_pid = pid;
         return true;
     }
+    return false;
+}
+
+static bool IsGameProcessRunning()
+{
+    ULONGLONG now = GetTickCount64();
+    if (now - g_last_process_check < 500)
+    {
+        if (g_game_process_id != 0)
+        {
+            HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, g_game_process_id);
+            if (process)
+            {
+                DWORD exit_code = 0;
+                BOOL result = GetExitCodeProcess(process, &exit_code);
+                CloseHandle(process);
+                if (result && exit_code == STILL_ACTIVE)
+                    return true;
+            }
+            g_game_process_id = 0;
+        }
+        return false;
+    }
+    
+    g_last_process_check = now;
+
+    DWORD pid = 0;
+    if (FindRunningGamePath(nullptr, &pid))
+    {
+        g_game_process_id = pid;
+        return true;
+    }
+    
+    g_game_process_id = 0;
+    return false;
+}
+
+static bool CloseGameProcess()
+{
+    if (g_game_process_id != 0)
+    {
+        HANDLE process = OpenProcess(PROCESS_TERMINATE, FALSE, g_game_process_id);
+        if (process)
+        {
+            BOOL result = TerminateProcess(process, 0);
+            CloseHandle(process);
+            g_game_process_id = 0;
+            return result == TRUE;
+        }
+    }
+    
+    DWORD pid = 0;
+    if (FindRunningGamePath(nullptr, &pid))
+    {
+        HANDLE process = OpenProcess(PROCESS_TERMINATE, FALSE, pid);
+        if (process)
+        {
+            BOOL result = TerminateProcess(process, 0);
+            CloseHandle(process);
+            g_game_process_id = 0;
+            return result == TRUE;
+        }
+    }
+    
     return false;
 }
 
@@ -1519,6 +1591,11 @@ static void RenderWinUI(float scale)
 
         ImGui::Dummy(ImVec2(0.0f, 10.0f * scale));
         bool can_launch = game_valid && g_is_admin;
+        bool game_running = IsGameProcessRunning();
+        
+        if (game_running)
+            can_launch = false;
+        
         if (!can_launch)
             ImGui::BeginDisabled();
         if (ImGui::Button(T(TextKey::LaunchGame), ImVec2(140.0f * scale, 0.0f)))
@@ -1538,13 +1615,44 @@ static void RenderWinUI(float scale)
         if (!can_launch)
             ImGui::EndDisabled();
         ImGui::SameLine();
+        
+        bool can_close = game_running;
+        if (!can_close)
+            ImGui::BeginDisabled();
+        if (ImGui::Button(T(TextKey::CloseGame), ImVec2(140.0f * scale, 0.0f)))
+        {
+            if (CloseGameProcess())
+            {
+                launch_status_state = LaunchStatusState::Ready;
+                launch_status_text.clear();
+            }
+            else
+            {
+                launch_status_state = LaunchStatusState::ErrorText;
+                launch_status_text = WideToUtf8(TW(TextKey::GameStatusNotRunning));
+            }
+        }
+        if (!can_close)
+            ImGui::EndDisabled();
+        ImGui::SameLine();
+        
         const char* status_text = nullptr;
-        if (launch_status_state == LaunchStatusState::Ready)
-            status_text = T(TextKey::LaunchStatusReady);
+        if (game_running)
+        {
+            status_text = T(TextKey::GameStatusRunning);
+        }
+        else if (launch_status_state == LaunchStatusState::Ready)
+        {
+            status_text = T(TextKey::GameStatusNotRunning);
+        }
         else if (launch_status_state == LaunchStatusState::Started)
+        {
             status_text = T(TextKey::LaunchStatusStarted);
+        }
         else
+        {
             status_text = launch_status_text.c_str();
+        }
         ImGui::Text(T(TextKey::StatusLabel), status_text);
         ImGui::PopStyleColor();
     }

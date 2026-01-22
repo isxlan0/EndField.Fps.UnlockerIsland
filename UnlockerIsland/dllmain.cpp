@@ -37,6 +37,8 @@ namespace UnlockerIsland
 		return true;
     }
 
+
+
     bool initunlock()
     {
         while (GameAssemblyH == NULL) {
