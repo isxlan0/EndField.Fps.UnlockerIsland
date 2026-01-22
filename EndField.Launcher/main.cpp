@@ -263,7 +263,7 @@ static const TextEntry kTextTable[] =
     { "21亿(不限制)", "21 億（不限制）", "2.1B (Unlimited)" },
     { "启动参数", "啟動參數", "Launch Arguments" },
     { "使用启动参数", "使用啟動參數", "Use launch arguments" },
-    { "使用 -popupwindow", "使用 -popupwindow", "Use -popupwindow" },
+    { "使用 -popupwindow (无边框窗口化)", "使用 -popupwindow (無邊框視窗化)", "Use -popupwindow (Borderless windowing)" },
     { "自定义启动参数", "自訂啟動參數", "Custom launch arguments" },
     { "参数", "參數", "Arguments" },
     { "启动游戏", "啟動遊戲", "Launch Game" },
