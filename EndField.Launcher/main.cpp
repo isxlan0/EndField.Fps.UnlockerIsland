@@ -72,8 +72,8 @@ struct LauncherConfig
     bool inject_enabled = true;
     bool inject_unlock_fps = false;
     int inject_target_fps = 120;
-    bool use_launch_args = true;
-    bool use_popupwindow = true;
+    bool use_launch_args = false;
+    bool use_popupwindow = false;
     bool use_custom_args = false;
     std::string custom_args;
     int theme_mode = 0;
