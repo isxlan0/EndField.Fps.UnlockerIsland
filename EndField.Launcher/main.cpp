@@ -112,7 +112,8 @@ static void SaveConfig(const LauncherConfig& config);
 enum class Language
 {
     ZhCN = 0,
-    EnUS = 1
+    ZhTW = 1,
+    EnUS = 2
 };
 
 enum class TextKey
@@ -172,6 +173,7 @@ enum class TextKey
     ThemeHint,
     LanguageLabel,
     LanguageZhCN,
+    LanguageZhTW,
     LanguageEnUS,
     LanguagePromptTitle,
     LanguagePromptBody,
@@ -198,6 +200,7 @@ struct LanguageOption
 static const LanguageOption kLanguageOptions[] =
 {
     { Language::ZhCN, TextKey::LanguageZhCN },
+    { Language::ZhTW, TextKey::LanguageZhTW },
     { Language::EnUS, TextKey::LanguageEnUS }
 };
 
@@ -211,84 +214,89 @@ static int ClampLanguageIndex(int value)
 
 struct TextEntry
 {
-    const char* zh;
+    const char* zh_cn;
+    const char* zh_tw;
     const char* en;
 };
 
 static const TextEntry kTextTable[] =
 {
-    { "请选择 Endfield.exe", "Select Endfield.exe" },
-    { "请选择 Endfield.exe。", "Please select Endfield.exe." },
-    { "提示", "Notice" },
-    { "请以管理员权限运行启动器。", "Please run the launcher as administrator." },
-    { "未找到游戏可执行文件。请选择游戏路径。", "Game executable not found. Please select the game path." },
-    { "无效的进程句柄。", "Invalid process handle." },
-    { "未找到 UnlockerIsland.dll。", "UnlockerIsland.dll not found." },
-    { "VirtualAllocEx 失败。", "VirtualAllocEx failed." },
-    { "WriteProcessMemory 失败。", "WriteProcessMemory failed." },
-    { "LoadLibraryW 不可用。", "LoadLibraryW not available." },
-    { "CreateRemoteThread 失败。", "CreateRemoteThread failed." },
-    { "目标进程 LoadLibraryW 失败。", "LoadLibraryW failed in target process." },
-    { "CreateProcess 失败。", "CreateProcess failed." },
-    { "就绪", "Ready" },
-    { "已启动", "Started" },
-    { "启动游戏", "Launch" },
-    { "窗口设置", "Settings" },
-    { "关于", "About" },
-    { "启动游戏", "Launch" },
-    { "窗口设置", "Settings" },
-    { "关于", "About" },
-    { "启动与注入", "Launch & Injection" },
-    { "外观与偏好", "Appearance & Preferences" },
-    { "说明", "Info" },
-    { "游戏路径", "Game Path" },
-    { "未设置", "Not set" },
-    { "游戏文件管理/切换游戏服务器/注入功能需要管理员权限，目前无法获取权限，相关功能已禁用。", "Managing game files, switching servers, and injection require administrator rights. These features are disabled." },
-    { "未找到游戏，请选择路径。", "Game not found. Please select a path." },
-    { "选择游戏位置", "Choose Game Location" },
-    { "自动获取游戏路径", "Auto Detect Game Path" },
-    { "获取成功，已自动关闭游戏，请使用本启动器的启动游戏功能。", "Path detected. The game was closed; please launch it from this launcher." },
-    { "未检测到正在运行的游戏进程，请先启动游戏后再点击获取。", "No running game process detected. Start the game first, then try again." },
-    { "注入", "Injection" },
-    { "注入功能非常危险且有可能会造成严重后果，请谨慎使用。", "Injection is dangerous and may cause serious issues. Use with caution." },
-    { "未以管理员权限运行，注入功能已禁用。", "Not running as administrator. Injection is disabled." },
-    { "启用注入功能 (将模块注入游戏，以便实现一些高级但危险的功能)", "Enable injection (inject modules to enable advanced but risky features)" },
-    { "开启解帧", "Unlock FPS" },
-    { "目标帧数", "Target FPS" },
-    { "快捷帧数", "Quick FPS" },
-    { "21亿(不限制)", "2.1B (Unlimited)" },
-    { "启动参数", "Launch Arguments" },
-    { "使用启动参数", "Use launch arguments" },
-    { "使用 -popupwindow", "Use -popupwindow" },
-    { "自定义启动参数", "Custom launch arguments" },
-    { "参数", "Arguments" },
-    { "启动游戏", "Launch Game" },
-    { "状态: %s", "Status: %s" },
-    { "外观", "Appearance" },
-    { "主题模式", "Theme Mode" },
-    { "跟随系统", "Follow System" },
-    { "深色", "Dark" },
-    { "浅色", "Light" },
-    { "跟随Windows系统设置修改界面颜色。", "Follow Windows settings for the UI theme." },
-    { "语言", "Language" },
-    { "简体中文", "Simplified Chinese" },
-    { "English", "English" },
-    { "选择语言", "Select Language" },
-    { "请选择要使用的语言。", "Please select the language to use." },
-    { "稍后可以在“窗口设置”中切换语言。", "You can change it later in Settings." },
-    { "确定", "OK" },
-    { "确定", "OK" },
-    { "取消", "Cancel" },
-    { "关于", "About" },
-    { "本项目开源地址：", "Project source:" },
-    { "免责声明：本工具仅供学习与测试使用。", "Disclaimer: This tool is for learning and testing only." },
-    { "使用注入功能可能违反相关条款或造成数据损坏等后果，", "Injection may violate terms or cause data loss," },
-    { "请自行承担所有风险与责任。", "use at your own risk." },
-    { "构建时间: %s %s", "Build time: %s %s" },
-    { "免责声明", "Disclaimer" },
+    { "请选择 Endfield.exe", "請選擇 Endfield.exe", "Select Endfield.exe" },
+    { "请选择 Endfield.exe。", "請選擇 Endfield.exe。", "Please select Endfield.exe." },
+    { "提示", "提示", "Notice" },
+    { "请以管理员权限运行启动器。", "請以管理員權限執行啟動器。", "Please run the launcher as administrator." },
+    { "未找到游戏可执行文件。请选择游戏路径。", "未找到遊戲可執行檔。請選擇遊戲路徑。", "Game executable not found. Please select the game path." },
+    { "无效的进程句柄。", "無效的行程控制代碼。", "Invalid process handle." },
+    { "未找到 UnlockerIsland.dll。", "未找到 UnlockerIsland.dll。", "UnlockerIsland.dll not found." },
+    { "VirtualAllocEx 失败。", "VirtualAllocEx 失敗。", "VirtualAllocEx failed." },
+    { "WriteProcessMemory 失败。", "WriteProcessMemory 失敗。", "WriteProcessMemory failed." },
+    { "LoadLibraryW 不可用。", "LoadLibraryW 無法使用。", "LoadLibraryW not available." },
+    { "CreateRemoteThread 失败。", "CreateRemoteThread 失敗。", "CreateRemoteThread failed." },
+    { "目标进程 LoadLibraryW 失败。", "目標行程 LoadLibraryW 失敗。", "LoadLibraryW failed in target process." },
+    { "CreateProcess 失败。", "CreateProcess 失敗。", "CreateProcess failed." },
+    { "就绪", "就緒", "Ready" },
+    { "已启动", "已啟動", "Started" },
+    { "启动游戏", "啟動遊戲", "Launch" },
+    { "窗口设置", "視窗設定", "Settings" },
+    { "关于", "關於", "About" },
+    { "启动游戏", "啟動遊戲", "Launch" },
+    { "窗口设置", "視窗設定", "Settings" },
+    { "关于", "關於", "About" },
+    { "启动与注入", "啟動與注入", "Launch & Injection" },
+    { "外观与偏好", "外觀與偏好", "Appearance & Preferences" },
+    { "说明", "說明", "Info" },
+    { "游戏路径", "遊戲路徑", "Game Path" },
+    { "未设置", "未設定", "Not set" },
+    { "游戏文件管理/切换游戏服务器/注入功能需要管理员权限，目前无法获取权限，相关功能已禁用。", "遊戲檔案管理／切換遊戲伺服器／注入功能需要管理員權限，目前無法取得權限，相關功能已停用。", "Managing game files, switching servers, and injection require administrator rights. These features are disabled." },
+    { "未找到游戏，请选择路径。", "未找到遊戲，請選擇路徑。", "Game not found. Please select a path." },
+    { "选择游戏位置", "選擇遊戲位置", "Choose Game Location" },
+    { "自动获取游戏路径", "自動取得遊戲路徑", "Auto Detect Game Path" },
+    { "获取成功，已自动关闭游戏，请使用本启动器的启动游戏功能。", "取得成功，已自動關閉遊戲，請使用本啟動器的啟動遊戲功能。", "Path detected. The game was closed; please launch it from this launcher." },
+    { "未检测到正在运行的游戏进程，请先启动游戏后再点击获取。", "未偵測到正在執行的遊戲行程，請先啟動遊戲後再點擊取得。", "No running game process detected. Start the game first, then try again." },
+    { "注入", "注入", "Injection" },
+    { "注入功能非常危险且有可能会造成严重后果，请谨慎使用。", "注入功能非常危險，且可能造成嚴重後果，請謹慎使用。", "Injection is dangerous and may cause serious issues. Use with caution." },
+    { "未以管理员权限运行，注入功能已禁用。", "未以管理員權限執行，注入功能已停用。", "Not running as administrator. Injection is disabled." },
+    { "启用注入功能 (将模块注入游戏，以便实现一些高级但危险的功能)", "啟用注入功能（將模組注入遊戲，以實現部分進階但危險的功能）", "Enable injection (inject modules to enable advanced but risky features)" },
+    { "开启解帧", "啟用解幀", "Unlock FPS" },
+    { "目标帧数", "目標幀數", "Target FPS" },
+    { "快捷帧数", "快速幀數", "Quick FPS" },
+    { "21亿(不限制)", "21 億（不限制）", "2.1B (Unlimited)" },
+    { "启动参数", "啟動參數", "Launch Arguments" },
+    { "使用启动参数", "使用啟動參數", "Use launch arguments" },
+    { "使用 -popupwindow", "使用 -popupwindow", "Use -popupwindow" },
+    { "自定义启动参数", "自訂啟動參數", "Custom launch arguments" },
+    { "参数", "參數", "Arguments" },
+    { "启动游戏", "啟動遊戲", "Launch Game" },
+    { "状态: %s", "狀態：%s", "Status: %s" },
+    { "外观", "外觀", "Appearance" },
+    { "主题模式", "主題模式", "Theme Mode" },
+    { "跟随系统", "跟隨系統", "Follow System" },
+    { "深色", "深色", "Dark" },
+    { "浅色", "淺色", "Light" },
+    { "跟随Windows系统设置修改界面颜色。", "依照 Windows 系統設定變更介面顏色。", "Follow Windows settings for the UI theme." },
+    { "语言", "語言", "Language" },
+    { "简体中文", "簡體中文", "Simplified Chinese" },
+    { "繁體中文", "繁體中文", "Traditional Chinese" },
+    { "English", "English", "English" },
+    { "选择语言", "選擇語言", "Select Language" },
+    { "请选择要使用的语言。", "請選擇要使用的語言。", "Please select the language to use." },
+    { "稍后可以在「窗口设置」中切换语言。", "稍後可在「視窗設定」中切換語言。", "You can change it later in Settings." },
+    { "确定", "確定", "OK" },
+    { "确定", "確定", "OK" },
+    { "取消", "取消", "Cancel" },
+    { "关于", "關於", "About" },
+    { "本项目开源地址：", "本專案開源位址：", "Project source:" },
+    { "免责声明：本工具仅供学习与测试使用。", "免責聲明：本工具僅供學習與測試使用。", "Disclaimer: This tool is for learning and testing only." },
+    { "使用注入功能可能违反相关条款或造成数据损坏等后果，", "使用注入功能可能違反相關條款或造成資料損毀等後果，", "Injection may violate terms or cause data loss," },
+    { "请自行承担所有风险与责任。", "請自行承擔所有風險與責任。", "use at your own risk." },
+    { "构建时间: %s %s", "建置時間：%s %s", "Build time: %s %s" },
+    { "免责声明", "免責聲明", "Disclaimer" },
     { "免责声明：本工具为第三方非官方程序，使用可能违反游戏条款并导致封号等后果，作者不承担任何责任。\n"
       "如有侵权请联系删除。\n\n"
       "是否继续？",
+      "免責聲明：本工具為第三方非官方程式，使用可能違反遊戲條款並導致封號等後果，作者不承擔任何責任。\n"
+      "如有侵權請聯絡刪除。\n\n"
+      "是否繼續？",
       "Disclaimer: This is an unofficial third-party tool. Using it may violate game terms and lead to penalties. The author assumes no responsibility.\n"
       "If there is any infringement, please contact for removal.\n\n"
       "Continue?" }
@@ -300,7 +308,9 @@ static const char* T(TextKey key)
     int lang_index = ClampLanguageIndex(g_language);
     if (lang_index == static_cast<int>(Language::EnUS) && entry.en && entry.en[0] != '\0')
         return entry.en;
-    return entry.zh;
+    else if (lang_index == static_cast<int>(Language::ZhTW) && entry.zh_tw && entry.zh_tw[0] != '\0')
+        return entry.zh_tw;
+    return entry.zh_cn;
 }
 
 static const char* TByLanguage(TextKey key, Language lang)
@@ -308,7 +318,9 @@ static const char* TByLanguage(TextKey key, Language lang)
     const TextEntry& entry = kTextTable[static_cast<size_t>(key)];
     if (lang == Language::EnUS && entry.en && entry.en[0] != '\0')
         return entry.en;
-    return entry.zh;
+    else if (lang == Language::ZhTW && entry.zh_tw && entry.zh_tw[0] != '\0')
+        return entry.zh_tw;
+    return entry.zh_cn;
 }
 
 static std::wstring TW(TextKey key)
@@ -365,11 +377,14 @@ static void RenderLanguagePromptModal(float scale)
     
     if (ImGui::BeginPopupModal("##language_prompt", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
     {
-        ImGui::TextUnformatted(TByLanguage(TextKey::LanguagePromptTitle, (g_language_prompt_choice == static_cast<int>(Language::EnUS)) ? Language::EnUS : Language::ZhCN));
+        // 根据当前选择的语言索引获取对应的Language枚举值
+        Language current_lang = kLanguageOptions[ClampLanguageIndex(g_language_prompt_choice)].id;
+        
+        ImGui::TextUnformatted(TByLanguage(TextKey::LanguagePromptTitle, current_lang));
         ImGui::Separator();
-        ImGui::TextUnformatted(TByLanguage(TextKey::LanguagePromptBody, (g_language_prompt_choice == static_cast<int>(Language::EnUS)) ? Language::EnUS : Language::ZhCN));
+        ImGui::TextUnformatted(TByLanguage(TextKey::LanguagePromptBody, current_lang));
         ImGui::Dummy(ImVec2(0.0f, 6.0f * scale));
-        ImGui::TextDisabled(TByLanguage(TextKey::LanguagePromptHint, (g_language_prompt_choice == static_cast<int>(Language::EnUS)) ? Language::EnUS : Language::ZhCN));
+        ImGui::TextDisabled(TByLanguage(TextKey::LanguagePromptHint, current_lang));
         ImGui::Separator();
 
         const int count = (int)(sizeof(kLanguageOptions) / sizeof(kLanguageOptions[0]));
@@ -379,7 +394,7 @@ static void RenderLanguagePromptModal(float scale)
         }
 
         ImGui::Dummy(ImVec2(0.0f, 6.0f * scale));
-        if (ImGui::Button(TByLanguage(TextKey::LanguagePromptConfirm, (g_language_prompt_choice == static_cast<int>(Language::EnUS)) ? Language::EnUS : Language::ZhCN)))
+        if (ImGui::Button(TByLanguage(TextKey::LanguagePromptConfirm, current_lang)))
         {
             g_language = ClampLanguageIndex(g_language_prompt_choice);
             g_config.language = g_language;
@@ -1205,7 +1220,7 @@ static void RenderWinUI(float scale)
         ImVec2(FLT_MAX, FLT_MAX));
     ImGui::SetNextWindowSize(window_size, ImGuiCond_FirstUseEver);
     
-    // 获取主显示器信息并计算居中位置
+    // 鑾峰彇鏄剧ず鍣ㄥ垎杈ㄧ巼淇℃伅骞惰绠楀眳涓綅缃紝涓€寮€濮嬪啓鍌婚€间簡 蹇樹簡鍔犲垽鏂?
     if (!window_positioned)
     {
         HMONITOR monitor = MonitorFromPoint(POINT{ 0, 0 }, MONITOR_DEFAULTTOPRIMARY);
@@ -1593,13 +1608,11 @@ static void RenderWinUI(float scale)
     ImGui::End();
 }
 
-
 bool CreateDeviceD3D(HWND hWnd);
 void CleanupDeviceD3D();
 void CreateRenderTarget();
 void CleanupRenderTarget();
 LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
-
 
 int main(int, char**)
 {
@@ -1624,7 +1637,6 @@ int main(int, char**)
     {
         g_language_prompt_choice = g_language;
         g_show_language_prompt = true;
-        // 语言选择完成后会自动显示免责声明
     }
     else if (!g_config.disclaimer_accepted)
     {
@@ -1644,7 +1656,6 @@ int main(int, char**)
 
     HWND hwnd = hwnd_hidden;
     g_hwnd = nullptr;
-
     
     if (!CreateDeviceD3D(hwnd))
     {
@@ -1652,14 +1663,12 @@ int main(int, char**)
         ::UnregisterClassW(wc.lpszClassName, wc.hInstance);
         return 1;
     }
-
     
     g_dark_mode = ReadSystemDarkMode();
     if (g_theme_mode == 1)
         g_dark_mode = true;
     else if (g_theme_mode == 2)
         g_dark_mode = false;
-
     
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
@@ -1670,7 +1679,6 @@ int main(int, char**)
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
     io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
     io.ConfigViewportsNoDecoration = true;
-
     
     ImGuiStyle& style = ImGui::GetStyle();
     const float ui_scale = 1.0f;
@@ -1680,7 +1688,6 @@ int main(int, char**)
     io.ConfigDpiScaleViewports = false;
     ApplyTheme(g_dark_mode, ui_scale);
 
-    
     if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable)
     {
         style.Colors[ImGuiCol_WindowBg].w = 1.0f;
@@ -1689,14 +1696,6 @@ int main(int, char**)
     
     ImGui_ImplWin32_Init(hwnd);
     ImGui_ImplDX11_Init(g_pd3dDevice, g_pd3dDeviceContext);
-
-    
-    
-    
-    
-    
-    
-    
     
     ImFontConfig Font_cfg;
     Font_cfg.OversampleH = 2;
@@ -1713,13 +1712,10 @@ int main(int, char**)
     }
     g_font_main = Font;
     g_font_title = Font_Big;
-
     
     bool done = false;
     while (!done)
     {
-        
-        
         MSG msg;
         while (::PeekMessage(&msg, nullptr, 0U, 0U, PM_REMOVE))
         {
@@ -1731,7 +1727,6 @@ int main(int, char**)
         if (done)
             break;
 
-        
         if (g_SwapChainOccluded && g_pSwapChain->Present(0, DXGI_PRESENT_TEST) == DXGI_STATUS_OCCLUDED)
         {
             ::Sleep(10);
@@ -1739,7 +1734,6 @@ int main(int, char**)
         }
         g_SwapChainOccluded = false;
 
-        
         if (g_ResizeWidth != 0 && g_ResizeHeight != 0)
         {
             CleanupRenderTarget();
@@ -1748,7 +1742,6 @@ int main(int, char**)
             CreateRenderTarget();
         }
 
-        
         ImGui_ImplDX11_NewFrame();
         ImGui_ImplWin32_NewFrame();
         ImGui::NewFrame();
@@ -1781,14 +1774,12 @@ int main(int, char**)
 
         RenderWinUI(ui_scale);
 
-        
         ImGui::Render();
         const float clear_color_with_alpha[4] = { g_clear_color.x * g_clear_color.w, g_clear_color.y * g_clear_color.w, g_clear_color.z * g_clear_color.w, g_clear_color.w };
         g_pd3dDeviceContext->OMSetRenderTargets(1, &g_mainRenderTargetView, nullptr);
         g_pd3dDeviceContext->ClearRenderTargetView(g_mainRenderTargetView, clear_color_with_alpha);
         ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
 
-        
         if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable)
         {
             ImGui::UpdatePlatformWindows();
@@ -1796,7 +1787,6 @@ int main(int, char**)
             ImGui::RenderPlatformWindowsDefault();
         }
 
-        
         HRESULT hr = g_pSwapChain->Present(g_in_sizemove ? 0 : 1, 0);
         g_SwapChainOccluded = (hr == DXGI_STATUS_OCCLUDED);
 
@@ -1804,7 +1794,6 @@ int main(int, char**)
             LimitFrameRate(DetermineTargetFps());
     }
 
-    
     ImGui_ImplDX11_Shutdown();
     ImGui_ImplWin32_Shutdown();
     ImGui::DestroyContext();
@@ -1848,9 +1837,6 @@ bool CreateDeviceD3D(HWND hWnd)
     if (res != S_OK)
         return false;
 
-    
-    
-    
     IDXGIFactory* pSwapChainFactory;
     if (SUCCEEDED(g_pSwapChain->GetParent(IID_PPV_ARGS(&pSwapChainFactory))))
     {
@@ -1885,11 +1871,6 @@ void CleanupRenderTarget()
 
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
-
-
-
-
-
 
 LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
@@ -1969,3 +1950,4 @@ LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
     }
     return ::DefWindowProcW(hWnd, msg, wParam, lParam);
 }
+
