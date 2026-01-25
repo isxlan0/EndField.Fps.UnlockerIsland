@@ -13,4 +13,7 @@ struct SharedData
     LONG alive;
     LONG unlock_enabled;
     int32_t target_fps;
+    LONG hookfov_enabled;
+    float target_fov;
+
 };

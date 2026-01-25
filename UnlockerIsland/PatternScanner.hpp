@@ -25,35 +25,13 @@ namespace PatternScanner {
             protect == PAGE_WRITECOPY;
     }
 
-    inline std::vector<RegionInfo> GetMemoryRegions() {
-        std::vector<RegionInfo> regions;
-        SYSTEM_INFO sysInfo = {};
-        GetSystemInfo(&sysInfo);
-
-        uintptr_t start = reinterpret_cast<uintptr_t>(sysInfo.lpMinimumApplicationAddress);
-        uintptr_t end = reinterpret_cast<uintptr_t>(sysInfo.lpMaximumApplicationAddress);
-
-        MEMORY_BASIC_INFORMATION mbi{};
-        while (start < end) {
-            if (VirtualQuery(reinterpret_cast<void*>(start), &mbi, sizeof(mbi)) == 0)
-                break;
-
-            if ((mbi.State == MEM_COMMIT) && IsReadableOrExecutable(mbi.Protect)) {
-                regions.push_back({ reinterpret_cast<uintptr_t>(mbi.BaseAddress), mbi.RegionSize });
-            }
-
-            start += mbi.RegionSize;
-        }
-        return regions;
-    }
-
     inline void ParsePattern(const std::string& pattern, std::vector<std::pair<uint8_t, bool>>& parsed) {
         std::istringstream iss(pattern);
         std::string byteStr;
 
         while (iss >> byteStr) {
             if (byteStr == "?" || byteStr == "??") {
-                parsed.emplace_back(0x00, true);  // 通配符
+                parsed.emplace_back(0x00, true);
             }
             else {
                 parsed.emplace_back(static_cast<uint8_t>(std::strtoul(byteStr.c_str(), nullptr, 16)), false);
@@ -62,9 +40,13 @@ namespace PatternScanner {
     }
 
     // 不包含C++对象的安全匹配函数，避免使用 __try 与析构冲突
-    inline bool SafeCompare(uint8_t* base, size_t size, const std::vector<std::pair<uint8_t, bool>>* pattern, uintptr_t* result) {
+    inline bool SafeCompare(uint8_t* base, size_t size,
+        const std::vector<std::pair<uint8_t, bool>>* pattern,
+        uintptr_t* result) {
         __try {
-            size_t patternSize = pattern->size();
+            const size_t patternSize = pattern->size();
+            if (patternSize == 0 || size < patternSize) return false;
+
             for (size_t i = 0; i <= size - patternSize; ++i) {
                 bool found = true;
                 for (size_t j = 0; j < patternSize; ++j) {
@@ -85,20 +67,99 @@ namespace PatternScanner {
         return false;
     }
 
+    inline std::vector<RegionInfo> GetMemoryRegionsInRange(uintptr_t start, uintptr_t end) {
+        std::vector<RegionInfo> regions;
+        if (start >= end) return regions;
+
+        MEMORY_BASIC_INFORMATION mbi{};
+        uintptr_t cur = start;
+
+        while (cur < end) {
+            if (VirtualQuery(reinterpret_cast<void*>(cur), &mbi, sizeof(mbi)) == 0)
+                break;
+
+            const uintptr_t regionBase = reinterpret_cast<uintptr_t>(mbi.BaseAddress);
+            const uintptr_t regionEnd = regionBase + mbi.RegionSize;
+
+            const uintptr_t clippedBase = (regionBase < start) ? start : regionBase;
+            const uintptr_t clippedEnd = (regionEnd > end) ? end : regionEnd;
+
+            if (clippedBase < clippedEnd) {
+                if (mbi.State == MEM_COMMIT && IsReadableOrExecutable(mbi.Protect)) {
+                    regions.push_back({ clippedBase, static_cast<size_t>(clippedEnd - clippedBase) });
+                }
+            }
+
+            cur = regionEnd;
+            if (cur <= regionBase) break;
+        }
+
+        return regions;
+    }
+
+    inline bool GetModuleRange(const wchar_t* moduleName, uintptr_t& base, size_t& size) {
+        HMODULE hMod = nullptr;
+
+        if (moduleName == nullptr || moduleName[0] == L'\0') {
+            hMod = GetModuleHandleW(nullptr);
+        }
+        else {
+            hMod = GetModuleHandleW(moduleName);
+        }
+
+        if (!hMod) return false;
+
+        MODULEINFO mi{};
+        if (!GetModuleInformation(GetCurrentProcess(), hMod, &mi, sizeof(mi)))
+            return false;
+
+        base = reinterpret_cast<uintptr_t>(mi.lpBaseOfDll);
+        size = static_cast<size_t>(mi.SizeOfImage);
+        return true;
+    }
+
     inline uintptr_t Scan(const std::string& pattern) {
         std::vector<std::pair<uint8_t, bool>> parsedPattern;
         ParsePattern(pattern, parsedPattern);
-        auto regions = GetMemoryRegions();
 
+        SYSTEM_INFO sysInfo{};
+        GetSystemInfo(&sysInfo);
+        const uintptr_t start = reinterpret_cast<uintptr_t>(sysInfo.lpMinimumApplicationAddress);
+        const uintptr_t end = reinterpret_cast<uintptr_t>(sysInfo.lpMaximumApplicationAddress);
+
+        auto regions = GetMemoryRegionsInRange(start, end);
         for (const auto& region : regions) {
             uintptr_t found = 0;
             if (SafeCompare(reinterpret_cast<uint8_t*>(region.base), region.size, &parsedPattern, &found)) {
                 return found;
             }
         }
-
         return 0;
     }
+
+    inline uintptr_t ScanModule(const std::string& pattern, const wchar_t* moduleName) {
+        uintptr_t modBase = 0;
+        size_t modSize = 0;
+
+        if (!GetModuleRange(moduleName, modBase, modSize))
+            return 0;
+
+        std::vector<std::pair<uint8_t, bool>> parsedPattern;
+        ParsePattern(pattern, parsedPattern);
+
+        const uintptr_t start = modBase;
+        const uintptr_t end = modBase + modSize;
+
+        auto regions = GetMemoryRegionsInRange(start, end);
+        for (const auto& region : regions) {
+            uintptr_t found = 0;
+            if (SafeCompare(reinterpret_cast<uint8_t*>(region.base), region.size, &parsedPattern, &found)) {
+                return found;
+            }
+        }
+        return 0;
+    }
+
 
     // 解析跳转类指令，如 call/jmp（E8/E9）
     // instructionAddr: 指令地址（E8/E9开头）
@@ -109,4 +170,4 @@ namespace PatternScanner {
         return instructionAddr + instructionSize + rel;
     }
 
-}
+} // namespace PatternScanner

@@ -8,9 +8,13 @@
 
 #include "MinHook/include/MinHook.h"
 
+#ifdef _DEBUG
 #define LOG(fmt, ...) printf("[MinHook] " fmt "\n", ##__VA_ARGS__)
 #define ERR(fmt, ...) printf("[MinHook::Error] " fmt "\n", ##__VA_ARGS__)
-
+#else
+#define LOG(fmt, ...)
+#define ERR(fmt, ...)
+#endif
 
 class MinHookManager {
 public:
@@ -45,6 +49,7 @@ private:
         }
         s_hooks.clear();
         MH_Uninitialize();
+
         LOG("MinHook uninitialized");
     }
 

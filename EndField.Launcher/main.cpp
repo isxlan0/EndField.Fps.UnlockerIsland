@@ -78,8 +78,11 @@ struct LauncherConfig
     bool inject_enabled = true;
     bool inject_unlock_fps = false;
     int inject_target_fps = 120;
+    bool hookfov_enabled = false;
+    float target_fov = 90.0f;
     bool use_launch_args = false;
     bool use_popupwindow = false;
+    bool use_force_d3d11 = false;
     bool use_custom_args = false;
     std::string custom_args;
     int theme_mode = 0;
@@ -157,15 +160,19 @@ enum class TextKey
     AutoDetectFail,
     SectionInject,
     InjectWarning,
+    SevereDangerWarning,
     InjectDisabledNoAdmin,
     EnableInjection,
     UnlockFps,
     TargetFps,
+    HookFov,
+    TargetFov,
     QuickFps,
     QuickFpsUnlimited,
     LaunchArgs,
     UseLaunchArgs,
     UsePopupWindow,
+    UseForceD3D11,
     CustomLaunchArgs,
     ArgsLabel,
     LaunchGame,
@@ -263,15 +270,19 @@ static const TextEntry kTextTable[] =
     { "未检测到正在运行的游戏进程，请先启动游戏后再点击获取。", "未偵測到正在執行的遊戲行程，請先啟動遊戲後再點擊取得。", "No running game process detected. Start the game first, then try again." },
     { "注入", "注入", "Injection" },
     { "注入功能非常危险且有可能会造成严重后果，请谨慎使用。", "注入功能非常危險，且可能造成嚴重後果，請謹慎使用。", "Injection is dangerous and may cause serious issues. Use with caution." },
+    { "!!!!严重危险功能，请谨慎使用。", "!!!!嚴重危險功能，請謹慎使用。", "!!!!Severe danger feature. Use with caution." },
     { "未以管理员权限运行，注入功能已禁用。", "未以管理員權限執行，注入功能已停用。", "Not running as administrator. Injection is disabled." },
     { "启用注入功能 (将模块注入游戏，以便实现一些高级但危险的功能)", "啟用注入功能（將模組注入遊戲，以實現部分進階但危險的功能）", "Enable injection (inject modules to enable advanced but risky features)" },
     { "开启解帧", "啟用解幀", "Unlock FPS" },
     { "目标帧数", "目標幀數", "Target FPS" },
+    { "开启修改FOV", "開啟修改FOV", "Enable FOV override" },
+    { "目标FOV(过高或过低会出现Bugs)", "目標FOV(過高或過低會出現Bugs)", "Target FOV(Bugs will occur if the value is too high or too low)" },
     { "快捷帧数", "快速幀數", "Quick FPS" },
     { "不限制", "不限制", "Unlimited" },
     { "启动参数", "啟動參數", "Launch Arguments" },
     { "使用启动参数", "使用啟動參數", "Use launch arguments" },
     { "使用 -popupwindow (无边框窗口化)", "使用 -popupwindow (無邊框視窗化)", "Use -popupwindow (Borderless windowing)" },
+    { "使用 -force-d3d11 (DX11渲染引擎)", "使用 -force-d3d11 (DX11 渲染引擎)", "Use -force-d3d11 (DX11 renderer)" },
     { "自定义启动参数", "自訂啟動參數", "Custom launch arguments" },
     { "参数", "參數", "Arguments" },
     { "启动游戏", "啟動遊戲", "Launch Game" },
@@ -610,8 +621,11 @@ static void LoadConfig(LauncherConfig* config)
         config->inject_enabled = j.value("inject_enabled", config->inject_enabled);
         config->inject_unlock_fps = j.value("inject_unlock_fps", config->inject_unlock_fps);
         config->inject_target_fps = j.value("inject_target_fps", config->inject_target_fps);
+        config->hookfov_enabled = j.value("hookfov_enabled", config->hookfov_enabled);
+        config->target_fov = j.value("target_fov", config->target_fov);
         config->use_launch_args = j.value("use_launch_args", config->use_launch_args);
         config->use_popupwindow = j.value("use_popupwindow", config->use_popupwindow);
+        config->use_force_d3d11 = j.value("use_force_d3d11", config->use_force_d3d11);
         config->use_custom_args = j.value("use_custom_args", config->use_custom_args);
         config->custom_args = j.value("custom_args", config->custom_args);
         config->theme_mode = j.value("theme_mode", config->theme_mode);
@@ -633,8 +647,11 @@ static void SaveConfig(const LauncherConfig& config)
     j["inject_enabled"] = config.inject_enabled;
     j["inject_unlock_fps"] = config.inject_unlock_fps;
     j["inject_target_fps"] = config.inject_target_fps;
+    j["hookfov_enabled"] = config.hookfov_enabled;
+    j["target_fov"] = config.target_fov;
     j["use_launch_args"] = config.use_launch_args;
     j["use_popupwindow"] = config.use_popupwindow;
+    j["use_force_d3d11"] = config.use_force_d3d11;
     j["use_custom_args"] = config.use_custom_args;
     j["custom_args"] = config.custom_args;
     j["theme_mode"] = config.theme_mode;
@@ -929,8 +946,24 @@ static void InitSharedMemory()
     g_shared->magic = kMagic;
     g_shared->seq = 0;
     g_shared->alive = 1;
-    g_shared->unlock_enabled = 0;
-    g_shared->target_fps = 0;
+    const int32_t kMinFps = (std::numeric_limits<int32_t>::min)();
+    const int32_t kMaxFps = (std::numeric_limits<int32_t>::max)();
+    if (g_config.inject_target_fps < kMinFps)
+        g_config.inject_target_fps = kMinFps;
+    if (g_config.inject_target_fps > kMaxFps)
+        g_config.inject_target_fps = kMaxFps;
+
+    const float kMinFov = 1.0f;
+    const float kMaxFov = 180.0f;
+    if (g_config.target_fov < kMinFov)
+        g_config.target_fov = kMinFov;
+    if (g_config.target_fov > kMaxFov)
+        g_config.target_fov = kMaxFov;
+
+    g_shared->unlock_enabled = (g_config.inject_enabled && g_config.inject_unlock_fps) ? 1 : 0;
+    g_shared->target_fps = g_config.inject_target_fps;
+    g_shared->hookfov_enabled = (g_config.inject_enabled && g_config.hookfov_enabled) ? 1 : 0;
+    g_shared->target_fov = g_config.target_fov;
     g_shared_last = *g_shared;
 }
 
@@ -962,15 +995,28 @@ static void UpdateSharedMemoryFromConfig()
     if (g_config.inject_target_fps > kMax)
         g_config.inject_target_fps = kMax;
 
+    const float kMinFov = 1.0f;
+    const float kMaxFov = 180.0f;
+    if (g_config.target_fov < kMinFov)
+        g_config.target_fov = kMinFov;
+    if (g_config.target_fov > kMaxFov)
+        g_config.target_fov = kMaxFov;
+
     LONG new_unlock = (g_config.inject_enabled && g_config.inject_unlock_fps) ? 1 : 0;
     int32_t new_fps = (int32_t)g_config.inject_target_fps;
+    LONG new_hookfov = (g_config.inject_enabled && g_config.hookfov_enabled) ? 1 : 0;
+    float new_fov = g_config.target_fov;
 
     if (g_shared_last.unlock_enabled != new_unlock ||
-        g_shared_last.target_fps != new_fps)
+        g_shared_last.target_fps != new_fps ||
+        g_shared_last.hookfov_enabled != new_hookfov ||
+        g_shared_last.target_fov != new_fov)
     {
         g_shared->magic = kMagic;
         g_shared->unlock_enabled = new_unlock;
         g_shared->target_fps = new_fps;
+        g_shared->hookfov_enabled = new_hookfov;
+        g_shared->target_fov = new_fov;
         InterlockedIncrement(&g_shared->seq);
         g_shared_last = *g_shared;
     }
@@ -1015,6 +1061,8 @@ static std::wstring BuildLaunchArguments(const LauncherConfig& config)
     {
         if (config.use_popupwindow)
             args += L" -popupwindow";
+        if (config.use_force_d3d11)
+            args += L" -force-d3d11";
         if (config.use_custom_args && !config.custom_args.empty())
         {
             args += L" ";
@@ -1253,10 +1301,11 @@ static bool PillButton(const char* label, bool active, const ImVec4& tint, const
 
 static void RenderWinUI(float scale)
 {
+    constexpr int kPageCount = 3;
     static int active_page = 0;
     static ImGuiID floating_viewport_id = 0;
-    static float tab_anim[3] = { 1.0f, 0.0f, 0.0f };
-    static float page_alpha[3] = { 1.0f, 0.0f, 0.0f };
+    static float tab_anim[kPageCount] = { 1.0f, 0.0f, 0.0f };
+    static float page_alpha[kPageCount] = { 1.0f, 0.0f, 0.0f };
     static float indicator_y = 0.0f;
     static float indicator_h = 0.0f;
     static bool custom_args_inited = false;
@@ -1271,7 +1320,7 @@ static void RenderWinUI(float scale)
     static LaunchStatusState launch_status_state = LaunchStatusState::Ready;
     static std::string launch_status_text;
 
-    const ImVec2 window_size(1300.0f * scale, 800.0f * scale);
+    const ImVec2 window_size(1430.0f * scale, 880.0f * scale);
     const ImVec2 window_pos(60.0f * scale, 40.0f * scale);
     const float header_height = 44.0f * scale;
     const float nav_width = 220.0f * scale;
@@ -1399,15 +1448,15 @@ static void RenderWinUI(float scale)
     ImGui::Dummy(ImVec2(0.0f, 8.0f * scale));
     ImGuiIO& io = ImGui::GetIO();
     float anim_speed = 16.0f * io.DeltaTime;
-    for (int i = 0; i < 3; ++i)
+    for (int i = 0; i < kPageCount; ++i)
     {
         float target = (active_page == i) ? 1.0f : 0.0f;
         tab_anim[i] = LerpFloat(tab_anim[i], target, anim_speed);
         page_alpha[i] = LerpFloat(page_alpha[i], target, anim_speed * 1.4f);
     }
 
-    ImVec2 tab_min[3] = {};
-    ImVec2 tab_max[3] = {};
+    ImVec2 tab_min[kPageCount] = {};
+    ImVec2 tab_max[kPageCount] = {};
 
     if (NavigationItem(T(TextKey::NavLaunch), active_page == 0, nav_width - 16.0f * scale, 40.0f * scale, scale, &tab_min[0], &tab_max[0]))
         active_page = 0;
@@ -1520,9 +1569,10 @@ static void RenderWinUI(float scale)
         ImGui::BeginChild("##inject", ImVec2(0.0f, 0.0f), ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY, ImGuiWindowFlags_NoScrollbar);
         ImGui::TextUnformatted(T(TextKey::SectionInject));
         ImGui::Separator();
-        ImGui::TextColored(ImVec4(0.98f, 0.45f, 0.45f, 1.0f), T(TextKey::InjectWarning));
+        const ImVec4 danger_color = ImVec4(0.98f, 0.45f, 0.45f, 1.0f);
+        ImGui::TextColored(danger_color, "%s", T(TextKey::InjectWarning));
         if (!g_is_admin)
-            ImGui::TextColored(ImVec4(0.98f, 0.45f, 0.45f, 1.0f), T(TextKey::InjectDisabledNoAdmin));
+            ImGui::TextColored(danger_color, "%s", T(TextKey::InjectDisabledNoAdmin));
 
         ImGui::BeginDisabled(!g_is_admin);
         if (ImGui::Checkbox(T(TextKey::EnableInjection), &g_config.inject_enabled))
@@ -1561,6 +1611,23 @@ static void RenderWinUI(float scale)
         if (ImGui::IsItemDeactivatedAfterEdit())
             SaveConfig(g_config);
         ImGui::EndDisabled();
+
+        ImGui::PushStyleColor(ImGuiCol_Text, danger_color);
+        if (ImGui::Checkbox(T(TextKey::HookFov), &g_config.hookfov_enabled))
+            SaveConfig(g_config);
+        ImGui::SameLine(0.0f, 8.0f * scale);
+        ImGui::TextColored(danger_color, "%s", T(TextKey::SevereDangerWarning));
+        ImGui::PopStyleColor();
+        ImGui::BeginDisabled(!g_config.hookfov_enabled);
+        ImGui::SliderFloat(T(TextKey::TargetFov), &g_config.target_fov, 1.0f, 180.0f, "%.1f");
+        if (g_config.target_fov < 1.0f)
+            g_config.target_fov = 1.0f;
+        if (g_config.target_fov > 180.0f)
+            g_config.target_fov = 180.0f;
+        if (ImGui::IsItemDeactivatedAfterEdit())
+            SaveConfig(g_config);
+        ImGui::EndDisabled();
+
         ImGui::EndDisabled();
         ImGui::EndDisabled();
         ImGui::EndChild();
@@ -1574,6 +1641,8 @@ static void RenderWinUI(float scale)
 
         ImGui::BeginDisabled(!g_config.use_launch_args);
         if (ImGui::Checkbox(T(TextKey::UsePopupWindow), &g_config.use_popupwindow))
+            SaveConfig(g_config);
+        if (ImGui::Checkbox(T(TextKey::UseForceD3D11), &g_config.use_force_d3d11))
             SaveConfig(g_config);
         if (ImGui::Checkbox(T(TextKey::CustomLaunchArgs), &g_config.use_custom_args))
             SaveConfig(g_config);
