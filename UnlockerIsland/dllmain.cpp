@@ -1,4 +1,4 @@
-#define WIN32_LEAN_AND_MEAN
+﻿#define WIN32_LEAN_AND_MEAN
 #include "pch.h"
 #include "../shared.h"
 #include <atomic>
@@ -8,6 +8,13 @@ namespace UnlockerIsland
 {
     HMODULE GameAssemblyD;
     HMODULE UnityPlayerD;
+
+    struct Camera
+    {
+        void* klass;      // 0x00
+        void* monitor;    // 0x08
+        void* cachedPtr;  // 0x10
+    };
 
     typedef void* (*Il2CppResolveICallFunc)(const char* name);
 
@@ -19,6 +26,10 @@ namespace UnlockerIsland
 	float g_fov_value = 90.0f;
 
     Il2CppResolveICallFunc g_resolve_icall = nullptr;
+
+    using Camera_get_main_t = Camera * (*)();
+    using SetFovNative_t = void (*)(void* camNative, float value);
+
 
     bool InitIl2Cpp(HMODULE libIl2CppHandle) {
         g_resolve_icall = (Il2CppResolveICallFunc)GetProcAddress(libIl2CppHandle, "il2cpp_resolve_icall");
@@ -44,14 +55,26 @@ namespace UnlockerIsland
 		return true;
     }
 
-    void Hook_set_Fov(void* _this, float value) {
-#ifdef _DEBUG
-        std::cout << "Hook_set_Fov-value:" << value << std::endl;
-#endif
+    void* GetMainCameraNative()
+    {
+        static Camera_get_main_t get_main = nullptr;
+        if (!get_main && g_resolve_icall)
+            get_main = (Camera_get_main_t)g_resolve_icall("UnityEngine.Camera::get_main()");
 
-		value = g_fov_value;
-        return g_OriginalSetFieldOfView(_this, value);
-	}
+        Camera* cam = get_main ? get_main() : nullptr;
+        return cam ? cam->cachedPtr : nullptr;
+    }
+
+    void Hook_set_Fov(void* _this, float value)
+    {
+        void* mainNative = GetMainCameraNative();
+        if (mainNative && _this == mainNative)
+            value = g_fov_value;
+
+        g_OriginalSetFieldOfView(_this, value);
+    }
+
+
 
     bool ControlFOVHook(bool isInstall) {
         if (!g_resolve_icall) {
