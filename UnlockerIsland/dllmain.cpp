@@ -28,7 +28,10 @@ namespace UnlockerIsland
     Il2CppResolveICallFunc g_resolve_icall = nullptr;
 
     using Camera_get_main_t = Camera * (*)();
-    using SetFovNative_t = void (*)(void* camNative, float value);
+
+    typedef void (*Camera_SetEntityDither_t)(void* entity, float alpha, void* source);
+
+    inline Camera_SetEntityDither_t g_OriginalSetEntityDither = nullptr;
 
 
     bool InitIl2Cpp(HMODULE libIl2CppHandle) {
@@ -74,6 +77,11 @@ namespace UnlockerIsland
         g_OriginalSetFieldOfView(_this, value);
     }
 
+    void Hook_SetEntityDither(void* entity, float alpha, void* source)
+    {
+        alpha = 1.0f;
+        g_OriginalSetEntityDither(entity, alpha, source);
+    }
 
 
     bool ControlFOVHook(bool isInstall) {
@@ -86,8 +94,6 @@ namespace UnlockerIsland
         if (s_targetFuncAddr == nullptr) {
 
             s_targetFuncAddr = (void*)PatternScanner::ScanModule("40 53 48 81 EC ? ? ? ? 0F 29 B4 24 ? ? ? ? 48 8B D9 0F 28 F1 E8 ? ? ? ? 84 C0",L"UnityPlayer.dll");
-			std::cout << "set_fieldOfView addr: " << std::hex << (uintptr_t)s_targetFuncAddr << std::dec << std::endl;
-
 
             if (!s_targetFuncAddr) {
                 MessageBoxW(nullptr, L"Failed to resolve set_fieldOfView!", L"UnlockerIsland", MB_OK | MB_ICONERROR);
@@ -112,6 +118,44 @@ namespace UnlockerIsland
         }
         else {
             bool result = MinHookManager::Disable(s_targetFuncAddr);
+            return result;
+        }
+    }
+
+    bool ControlDitherHook(bool isInstall) {
+        if (!g_resolve_icall) {
+            MessageBoxW(nullptr, L"Failed to get il2cpp_resolve_icall!", L"UnlockerIsland", MB_OK | MB_ICONERROR);
+            return false;
+        }
+        static void* s_targetFuncAddr2 = nullptr;
+
+        if (s_targetFuncAddr2 == nullptr) {
+
+            s_targetFuncAddr2 = (void*)PatternScanner::ScanModule("48 89 5C 24 ? 56 48 83 EC ? 80 3D ? ? ? ? 00 41 8B F0 0F 29 74 24 ? 48 8B D9 0F 28 F1 75 ? 48 8D 0D ? ? ? ? E8 ? ? ? ? C6 05 ? ? ? ? ? 33 D2 48 89 6C 24", L"GameAssembly.dll");
+
+            if (!s_targetFuncAddr2) {
+                MessageBoxW(nullptr, L"Failed to resolve Dither!", L"UnlockerIsland", MB_OK | MB_ICONERROR);
+                return false;
+            }
+        }
+
+        if (isInstall) {
+            bool result = MinHookManager::Add(
+                s_targetFuncAddr2,
+                &Hook_SetEntityDither,
+                (void**)&g_OriginalSetEntityDither
+            );
+            if (!result) {
+                if (MinHookManager::Enable(s_targetFuncAddr2)) {
+                    return true;
+                }
+                MessageBoxW(nullptr, L"Failed to create/enable Dither Hook!", L"UnlockerIsland", MB_OK | MB_ICONERROR);
+                return false;
+            }
+            return true;
+        }
+        else {
+            bool result = MinHookManager::Disable(s_targetFuncAddr2);
             return result;
         }
     }
@@ -143,8 +187,6 @@ namespace UnlockerIsland
 
 void Run()
 {
-
-
     UnlockerIsland::initunlock();
 
 	Sleep(5000);
@@ -153,6 +195,7 @@ void Run()
     SharedData* shared = nullptr;
     LONG last_seq = -1;
 	bool fov_hook_then = false;
+    bool fov_Dither_then = false;
 
     while (true)
     {
@@ -191,6 +234,20 @@ void Run()
                 UnlockerIsland::ControlFOVHook(false);
 				fov_hook_then = false;
             }
+
+            if (shared->hookDither_enabled && !fov_Dither_then)
+            {
+                UnlockerIsland::ControlDitherHook(true);
+                fov_Dither_then = true;
+            }
+            else if (!shared->hookDither_enabled && fov_Dither_then)
+            {
+                UnlockerIsland::ControlDitherHook(false);
+                fov_Dither_then = false;
+            }
+
+
+
         }
 
         Sleep(500);

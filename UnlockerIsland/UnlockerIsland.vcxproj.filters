@@ -34,7 +34,7 @@
       <Filter>MinHook</Filter>
     </ClInclude>
     <ClInclude Include="PatternScanner.hpp">
-      <Filter>PatternScanner</Filter>
+      <Filter>头文件</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>

@@ -15,5 +15,5 @@ struct SharedData
     int32_t target_fps;
     LONG hookfov_enabled;
     float target_fov;
-
+    LONG hookDither_enabled;
 };

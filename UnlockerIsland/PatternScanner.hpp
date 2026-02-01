@@ -1,18 +1,67 @@
-#pragma once
+ï»¿#pragma once
 #include <windows.h>
 #include <vector>
 #include <string>
 #include <sstream>
 #include <Psapi.h>
+#include <chrono>
+#include <atomic>
+#include <cstdio>
 
 #pragma comment(lib, "psapi.lib")
 
 namespace PatternScanner {
 
+#ifdef _DEBUG
+#define PATTERN_SCAN_LOG_RESULT(...) PatternScanner::LogScanResult(__VA_ARGS__)
+#define PATTERN_SCAN_LOG_BEGIN(idVar) \
+    const uint32_t idVar = PatternScanner::NextScanIndex(); \
+    const auto _ps_t0_##idVar = std::chrono::high_resolution_clock::now();
+#define PATTERN_SCAN_LOG_END(idVar, pattern, moduleName, found, address) \
+    do { \
+        const auto _ps_t1_##idVar = std::chrono::high_resolution_clock::now(); \
+        const double _ps_ms_##idVar = std::chrono::duration<double, std::milli>(_ps_t1_##idVar - _ps_t0_##idVar).count(); \
+        PATTERN_SCAN_LOG_RESULT(idVar, pattern, moduleName, found, _ps_ms_##idVar, address); \
+    } while (0)
+#else
+#define PATTERN_SCAN_LOG_RESULT(...) do { } while (0)
+#define PATTERN_SCAN_LOG_BEGIN(idVar) do { } while (0)
+#define PATTERN_SCAN_LOG_END(idVar, pattern, moduleName, found, address) do { } while (0)
+#endif
+
     struct RegionInfo {
         uintptr_t base;
         size_t size;
     };
+
+    inline std::atomic<uint32_t> g_scanIndex{ 0 };
+
+    inline uint32_t NextScanIndex() {
+        return g_scanIndex.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    inline void LogScanResult(uint32_t id, const std::string& pattern, const wchar_t* moduleName, bool found, double ms, uintptr_t address) {
+        if (moduleName && moduleName[0] != L'\0') {
+            if (found) {
+                std::printf("[PatternScanner] id=%u module=%ls pattern=\"%s\" time=%.3fms addr=%p\n",
+                    id, moduleName, pattern.c_str(), ms, reinterpret_cast<void*>(address));
+            }
+            else {
+                std::printf("[PatternScanner] id=%u module=%ls pattern=\"%s\" time=%.3fms addr=<not found>\n",
+                    id, moduleName, pattern.c_str(), ms);
+            }
+        }
+        else {
+            if (found) {
+                std::printf("[PatternScanner] id=%u module=<all> pattern=\"%s\" time=%.3fms addr=%p\n",
+                    id, pattern.c_str(), ms, reinterpret_cast<void*>(address));
+            }
+            else {
+                std::printf("[PatternScanner] id=%u module=<all> pattern=\"%s\" time=%.3fms addr=<not found>\n",
+                    id, pattern.c_str(), ms);
+            }
+        }
+    }
 
     inline bool IsReadableOrExecutable(DWORD protect) {
         return
@@ -39,7 +88,6 @@ namespace PatternScanner {
         }
     }
 
-    // ²»°üº¬C++¶ÔÏóµÄ°²È«Æ¥Åäº¯Êı£¬±ÜÃâÊ¹ÓÃ __try ÓëÎö¹¹³åÍ»
     inline bool SafeCompare(uint8_t* base, size_t size,
         const std::vector<std::pair<uint8_t, bool>>* pattern,
         uintptr_t* result) {
@@ -62,7 +110,6 @@ namespace PatternScanner {
             }
         }
         __except (EXCEPTION_EXECUTE_HANDLER) {
-            // ºöÂÔÎŞĞ§ÄÚ´æ
         }
         return false;
     }
@@ -119,6 +166,7 @@ namespace PatternScanner {
     }
 
     inline uintptr_t Scan(const std::string& pattern) {
+        PATTERN_SCAN_LOG_BEGIN(scanId);
         std::vector<std::pair<uint8_t, bool>> parsedPattern;
         ParsePattern(pattern, parsedPattern);
 
@@ -131,18 +179,23 @@ namespace PatternScanner {
         for (const auto& region : regions) {
             uintptr_t found = 0;
             if (SafeCompare(reinterpret_cast<uint8_t*>(region.base), region.size, &parsedPattern, &found)) {
+                PATTERN_SCAN_LOG_END(scanId, pattern, nullptr, true, found);
                 return found;
             }
         }
+        PATTERN_SCAN_LOG_END(scanId, pattern, nullptr, false, 0);
         return 0;
     }
 
     inline uintptr_t ScanModule(const std::string& pattern, const wchar_t* moduleName) {
+        PATTERN_SCAN_LOG_BEGIN(scanId);
         uintptr_t modBase = 0;
         size_t modSize = 0;
 
-        if (!GetModuleRange(moduleName, modBase, modSize))
+        if (!GetModuleRange(moduleName, modBase, modSize)) {
+            PATTERN_SCAN_LOG_END(scanId, pattern, moduleName, false, 0);
             return 0;
+        }
 
         std::vector<std::pair<uint8_t, bool>> parsedPattern;
         ParsePattern(pattern, parsedPattern);
@@ -154,17 +207,19 @@ namespace PatternScanner {
         for (const auto& region : regions) {
             uintptr_t found = 0;
             if (SafeCompare(reinterpret_cast<uint8_t*>(region.base), region.size, &parsedPattern, &found)) {
+                PATTERN_SCAN_LOG_END(scanId, pattern, moduleName, true, found);
                 return found;
             }
         }
+        PATTERN_SCAN_LOG_END(scanId, pattern, moduleName, false, 0);
         return 0;
     }
 
 
-    // ½âÎöÌø×ªÀàÖ¸Áî£¬Èç call/jmp£¨E8/E9£©
-    // instructionAddr: Ö¸ÁîµØÖ·£¨E8/E9¿ªÍ·£©
-    // offset: Ìø×ªÆ«ÒÆÎ»ÖÃ£¨E8ºóÃæÊÇ +1£©
-    // instructionSize: Õû¸öÖ¸Áî´óĞ¡£¨E8 xx xx xx xx ÊÇ 5 ×Ö½Ú£©
+    // è§£æè·³è½¬ç±»æŒ‡ä»¤ï¼Œå¦‚ call/jmpï¼ˆE8/E9ï¼‰
+    // instructionAddr: æŒ‡ä»¤åœ°å€ï¼ˆE8/E9å¼€å¤´ï¼‰
+    // offset: è·³è½¬åç§»ä½ç½®ï¼ˆE8åé¢æ˜¯ +1ï¼‰
+    // instructionSize: æ•´ä¸ªæŒ‡ä»¤å¤§å°ï¼ˆE8 xx xx xx xx æ˜¯ 5 å­—èŠ‚ï¼‰
     inline uintptr_t ResolveRelativeAddress(uintptr_t instructionAddr, size_t offset = 1, size_t instructionSize = 5) {
         int32_t rel = *reinterpret_cast<int32_t*>(instructionAddr + offset);
         return instructionAddr + instructionSize + rel;

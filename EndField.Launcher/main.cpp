@@ -79,6 +79,7 @@ struct LauncherConfig
     bool inject_unlock_fps = false;
     int inject_target_fps = 120;
     bool hookfov_enabled = false;
+    bool hookDither_enabled = false;
     float target_fov = 90.0f;
     bool use_launch_args = false;
     bool use_popupwindow = false;
@@ -200,7 +201,8 @@ enum class TextKey
     DisclaimerLine3,
     BuildTime,
     DisclaimerDialogTitle,
-    DisclaimerDialogBody
+    DisclaimerDialogBody,
+    HookDither
 };
 
 struct LanguageOption
@@ -270,7 +272,7 @@ static const TextEntry kTextTable[] =
     { "未检测到正在运行的游戏进程，请先启动游戏后再点击获取。", "未偵測到正在執行的遊戲行程，請先啟動遊戲後再點擊取得。", "No running game process detected. Start the game first, then try again." },
     { "注入", "注入", "Injection" },
     { "注入功能非常危险且有可能会造成严重后果，请谨慎使用。", "注入功能非常危險，且可能造成嚴重後果，請謹慎使用。", "Injection is dangerous and may cause serious issues. Use with caution." },
-    { "!!!!严重危险功能，请谨慎使用。", "!!!!嚴重危險功能，請謹慎使用。", "!!!!Severe danger feature. Use with caution." },
+    { "!!!!严重危险功能(Hook)，请谨慎使用。", "!!!!嚴重危險功能(Hook)，請謹慎使用。", "!!!!Severe danger feature(Hook). Use with caution." },
     { "未以管理员权限运行，注入功能已禁用。", "未以管理員權限執行，注入功能已停用。", "Not running as administrator. Injection is disabled." },
     { "启用注入功能 (将模块注入游戏，以便实现一些高级但危险的功能)", "啟用注入功能（將模組注入遊戲，以實現部分進階但危險的功能）", "Enable injection (inject modules to enable advanced but risky features)" },
     { "开启解帧", "啟用解幀", "Unlock FPS" },
@@ -318,7 +320,10 @@ static const TextEntry kTextTable[] =
       "是否繼續？",
       "Disclaimer: This is an unofficial third-party tool. Using it may violate game terms and lead to penalties. The author assumes no responsibility.\n"
       "If there is any infringement, please contact for removal.\n\n"
-      "Continue?" }
+      "Continue?" },
+
+    { "防止角色在某些场景下透明(反虚化)", "防止角色在特定情況下變為透明(反虛化)", "Prevent characters from becoming transparent in certain scenarios" },
+
 };
 
 static const char* T(TextKey key)
@@ -622,6 +627,7 @@ static void LoadConfig(LauncherConfig* config)
         config->inject_unlock_fps = j.value("inject_unlock_fps", config->inject_unlock_fps);
         config->inject_target_fps = j.value("inject_target_fps", config->inject_target_fps);
         config->hookfov_enabled = j.value("hookfov_enabled", config->hookfov_enabled);
+		config->hookDither_enabled = j.value("hookDither_enabled", config->hookDither_enabled);
         config->target_fov = j.value("target_fov", config->target_fov);
         config->use_launch_args = j.value("use_launch_args", config->use_launch_args);
         config->use_popupwindow = j.value("use_popupwindow", config->use_popupwindow);
@@ -648,6 +654,7 @@ static void SaveConfig(const LauncherConfig& config)
     j["inject_unlock_fps"] = config.inject_unlock_fps;
     j["inject_target_fps"] = config.inject_target_fps;
     j["hookfov_enabled"] = config.hookfov_enabled;
+    j["hookDither_enabled"] = config.hookDither_enabled;
     j["target_fov"] = config.target_fov;
     j["use_launch_args"] = config.use_launch_args;
     j["use_popupwindow"] = config.use_popupwindow;
@@ -963,6 +970,7 @@ static void InitSharedMemory()
     g_shared->unlock_enabled = (g_config.inject_enabled && g_config.inject_unlock_fps) ? 1 : 0;
     g_shared->target_fps = g_config.inject_target_fps;
     g_shared->hookfov_enabled = (g_config.inject_enabled && g_config.hookfov_enabled) ? 1 : 0;
+    g_shared->hookDither_enabled = (g_config.inject_enabled && g_config.hookDither_enabled) ? 1 : 0;
     g_shared->target_fov = g_config.target_fov;
     g_shared_last = *g_shared;
 }
@@ -1005,17 +1013,20 @@ static void UpdateSharedMemoryFromConfig()
     LONG new_unlock = (g_config.inject_enabled && g_config.inject_unlock_fps) ? 1 : 0;
     int32_t new_fps = (int32_t)g_config.inject_target_fps;
     LONG new_hookfov = (g_config.inject_enabled && g_config.hookfov_enabled) ? 1 : 0;
+    LONG new_hookDither = (g_config.inject_enabled && g_config.hookDither_enabled) ? 1 : 0;
     float new_fov = g_config.target_fov;
 
     if (g_shared_last.unlock_enabled != new_unlock ||
         g_shared_last.target_fps != new_fps ||
         g_shared_last.hookfov_enabled != new_hookfov ||
+        g_shared_last.hookDither_enabled != new_hookDither ||
         g_shared_last.target_fov != new_fov)
     {
         g_shared->magic = kMagic;
         g_shared->unlock_enabled = new_unlock;
         g_shared->target_fps = new_fps;
         g_shared->hookfov_enabled = new_hookfov;
+        g_shared->hookDither_enabled = new_hookDither;
         g_shared->target_fov = new_fov;
         InterlockedIncrement(&g_shared->seq);
         g_shared_last = *g_shared;
@@ -1627,6 +1638,12 @@ static void RenderWinUI(float scale)
         if (ImGui::IsItemDeactivatedAfterEdit())
             SaveConfig(g_config);
         ImGui::EndDisabled();
+        ImGui::PushStyleColor(ImGuiCol_Text, danger_color);
+        if (ImGui::Checkbox(T(TextKey::HookDither), &g_config.hookDither_enabled))
+            SaveConfig(g_config);
+        ImGui::SameLine(0.0f, 8.0f * scale);
+        ImGui::TextColored(danger_color, "%s", T(TextKey::SevereDangerWarning));
+        ImGui::PopStyleColor();
 
         ImGui::EndDisabled();
         ImGui::EndDisabled();
